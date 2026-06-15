@@ -18,6 +18,15 @@ from pathlib import Path
 from aiohttp import ClientSession, ClientTimeout
 
 
+IGNORE_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
+               ".next", "target", ".idea", ".gradle", ".cache", ".pytest_cache", ".mypy_cache",
+               ".DS_Store", ".terraform", "vendor", ".turbo", ".parcel-cache"}
+
+
+def is_ignored(rel):
+    return any(part in IGNORE_DIRS for part in rel.split("/"))
+
+
 def _sig(path: Path):
     try:
         st = path.stat()
@@ -27,11 +36,13 @@ def _sig(path: Path):
 
 
 def local_manifest(root: Path):
-    """rel-path -> (mtime, size) for every file under root."""
+    """rel-path -> (mtime, size) for every file under root (ignored dirs skipped)."""
     out = {}
     for p in root.rglob("*"):
         if p.is_file():
             rel = p.relative_to(root).as_posix()
+            if is_ignored(rel):
+                continue
             s = _sig(p)
             if s:
                 out[rel] = s
@@ -61,6 +72,7 @@ class SyncSession:
         self._task = None
         self._stop = False
         self.status = "starting"
+        self.files = 0
 
     # ---- lifecycle ----
     async def start(self):
@@ -74,17 +86,20 @@ class SyncSession:
 
     async def _run(self):
         try:
+            self.status = "pulling…"
             await self._initial()
-            self.status = "synced"
+            self.files = len(self.base_host)
+            self.status = f"synced · {self.files} files"
             while not self._stop:
                 await asyncio.sleep(self.INTERVAL)
                 try:
                     await self._cycle()
+                    self.files = len(self.base_host)
+                    self.status = f"synced · {self.files} files"
                 except asyncio.CancelledError:
                     raise
-                except Exception as e:
-                    self.status = "error"
-                    await self._emit(f"sync error: {e}")
+                except Exception:
+                    self.status = "offline (retrying)"
         except asyncio.CancelledError:
             pass
 

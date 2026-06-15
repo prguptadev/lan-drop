@@ -211,6 +211,8 @@ class App:
                     p["online"] = False
             if changed:
                 await self.broadcast_peers()
+            if self.sync_sessions or self.fuse_stops:
+                await self._broadcast_workspaces()
             for peer in came_online:
                 await self._flush(peer)
 
@@ -240,7 +242,7 @@ class App:
 
     # ---------- browser fan-out ----------
     def _peer_list(self):
-        return [{"id": p["id"], "name": p["name"], "ip": p.get("ip"),
+        return [{"id": p["id"], "name": p["name"], "ip": p.get("ip"), "port": p.get("port", self.port),
                  "online": p.get("online", True), "terminal": p.get("terminal", False)}
                 for p in self.peers.values()]
 
@@ -750,15 +752,19 @@ class App:
     async def fs_manifest(self, request):
         if not self._fs_auth(request):
             return web.Response(status=403)
+        import remotefs
         root = self._share_root(request.query.get("share"))
         if not root or not root.is_dir():
             return web.Response(status=404)
         files = {}
         for p in root.rglob("*"):
             if p.is_file():
+                rel = p.relative_to(root).as_posix()
+                if remotefs.is_ignored(rel):
+                    continue
                 try:
                     st = p.stat()
-                    files[p.relative_to(root).as_posix()] = [int(st.st_mtime), st.st_size]
+                    files[rel] = [int(st.st_mtime), st.st_size]
                 except OSError:
                     pass
         return web.json_response({"files": files})
@@ -847,7 +853,8 @@ class App:
         out = []
         for w in self.workspaces.values():
             sess = self.sync_sessions.get(w["id"])
-            out.append({**w, "status": sess.status if sess else ("mounted" if w["id"] in self.fuse_stops else "stopped")})
+            status = sess.status if sess else ("mounted" if w["id"] in self.fuse_stops else "stopped")
+            out.append({**w, "status": status})
         await self._broadcast({"type": "workspaces", "workspaces": out})
 
     async def _remote_shares(self, peer, pin):
