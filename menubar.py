@@ -22,9 +22,9 @@ def run_server(name, port):
     asyncio.run(serve(name, port, announce=False))
 
 
-class TridentDrop(rumps.App):
+class LanDrop(rumps.App):
     def __init__(self):
-        super().__init__("Trident Drop", title="📩")
+        super().__init__("Lan Drop", title="📩")
         self.dev_name = computer_name()
         self.port = PORT
         self.status = rumps.MenuItem("Starting…")
@@ -46,4 +46,4 @@ class TridentDrop(rumps.App):
 
 
 if __name__ == "__main__":
-    TridentDrop().run()
+    LanDrop().run()

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Trident Drop — LAN chat + file sharing. Run on BOTH Macs.
+# Lan Drop — LAN chat + file sharing. Run on BOTH Macs.
 cd "$(dirname "$0")"
 if [ ! -d venv ]; then
   python3 -m venv venv

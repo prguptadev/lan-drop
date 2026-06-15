@@ -1,5 +1,5 @@
 #!/bin/bash
-# Double-click this in Finder to start Trident Drop in the menu bar.
+# Double-click this in Finder to start Lan Drop in the menu bar.
 cd "$(dirname "$0")"
 
 if [ ! -d venv ]; then
@@ -9,10 +9,10 @@ if [ ! -d venv ]; then
 fi
 
 # Launch the menu-bar app detached so closing this window won't stop it.
-nohup ./venv/bin/python menubar.py > /tmp/trident-drop.log 2>&1 &
+nohup ./venv/bin/python menubar.py > /tmp/lan-drop.log 2>&1 &
 disown
 
 echo ""
-echo "  Trident Drop is starting in your menu bar (top-right, 📩 icon)."
+echo "  Lan Drop is starting in your menu bar (top-right, 📩 icon)."
 echo "  You can close this window now."
 sleep 2

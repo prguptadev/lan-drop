@@ -11,7 +11,7 @@ from aiohttp import web, ClientSession, ClientTimeout
 from zeroconf import ServiceInfo, ServiceStateChange
 from zeroconf.asyncio import AsyncZeroconf, AsyncServiceBrowser, AsyncServiceInfo
 
-SERVICE_TYPE = "_tridentdrop._tcp.local."
+SERVICE_TYPE = "_landrop._tcp.local."
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -411,7 +411,7 @@ async def serve(name, port, announce=True):
     asyncio.ensure_future(app_obj.heartbeat())
 
     if announce:
-        print(f"\n  Trident Drop  —  '{app_obj.name}'")
+        print(f"\n  Lan Drop  —  '{app_obj.name}'")
         print(f"  Open this Mac:  http://localhost:{port}")
         print(f"  Other devices:  http://{app_obj.ip}:{port}")
         print("  Press Ctrl+C to stop.\n")
