@@ -1,0 +1,3 @@
+aiohttp>=3.9
+zeroconf>=0.131
+rumps>=0.4
