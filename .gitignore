@@ -1,0 +1,14 @@
+# Runtime file cache (sent/received transfers)
+uploads/
+
+# Python virtualenv & bytecode
+venv/
+__pycache__/
+*.pyc
+
+# Per-machine state
+.displayname
+known_peers.json
+
+# macOS
+.DS_Store

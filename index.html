@@ -88,6 +88,7 @@
       <div class="name-row">
         <span class="name" id="myName">…</span>
         <span class="act" id="qrBtn" title="Show QR to connect">▦</span>
+        <span class="act" id="settingsBtn" title="Settings">⚙️</span>
         <span class="act" id="editMe" title="Rename this Mac">✏️</span>
       </div>
       <div class="sub" id="meSub">on this network</div>
@@ -140,6 +141,7 @@ const unread = {};          // peer id -> count
 const msgIndex = {};        // msgId -> { key, entry }
 let aliases = {};           // ip -> custom display name
 let myName = null;
+let settings = { preview: true, sound: true };
 
 const $ = id => document.getElementById(id);
 const rid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -154,7 +156,9 @@ function load() {
   try { aliases = JSON.parse(localStorage.getItem("td_aliases") || "{}"); } catch (e) {}
   try { groups = JSON.parse(localStorage.getItem("td_groups") || "[]"); } catch (e) {}
   try { myName = localStorage.getItem("td_myname") || null; } catch (e) {}
+  try { Object.assign(settings, JSON.parse(localStorage.getItem("td_settings") || "{}")); } catch (e) {}
 }
+function saveSettings() { try { localStorage.setItem("td_settings", JSON.stringify(settings)); } catch (e) {} }
 function displayName(p) { return (p && p.ip && aliases[p.ip]) || (p && p.name) || "Device"; }
 load();
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
@@ -303,7 +307,7 @@ function renderMsgs() {
     }
     const b = document.createElement("div"); b.className = "bubble";
     if (m.kind === "text") b.textContent = m.text;
-    else if (m.isImage && (m.previewUrl || m.url)) {
+    else if (m.isImage && settings.preview && (m.previewUrl || m.url)) {
       const img = document.createElement("img"); img.className = "thumb"; img.src = m.previewUrl || m.url;
       if (m.url) img.onclick = () => { const a = document.createElement("a"); a.href = m.url; a.download = m.name; a.click(); };
       b.appendChild(img);
@@ -419,6 +423,18 @@ function openModal(html) { $("modal").innerHTML = html; $("overlay").classList.a
 function closeModal() { $("overlay").classList.remove("show"); }
 $("overlay").onclick = e => { if (e.target === $("overlay")) closeModal(); };
 
+$("settingsBtn").onclick = () => {
+  openModal(`<h3>Settings</h3>
+    <label class="mp"><input type="checkbox" id="setPreview" ${settings.preview ? "checked" : ""}> Show image previews in chat</label>
+    <label class="mp"><input type="checkbox" id="setSound" ${settings.sound ? "checked" : ""}> Play sound on new message</label>
+    <div class="actions"><button class="btn" id="setSave">Done</button></div>`);
+  $("setSave").onclick = () => {
+    settings.preview = $("setPreview").checked;
+    settings.sound = $("setSound").checked;
+    saveSettings(); closeModal(); if (active) renderMsgs();
+  };
+};
+
 $("qrBtn").onclick = () => {
   openModal(`<h3>Connect a phone or Mac</h3>
     <div class="qrwrap"><img src="/qr" alt="QR" onerror="this.parentNode.innerHTML='QR needs the qrcode library'"></div>
@@ -484,6 +500,7 @@ function notify(title, body) {
 }
 let audioCtx;
 function beep() {
+  if (!settings.sound) return;
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     const o = audioCtx.createOscillator(), g = audioCtx.createGain();

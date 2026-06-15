@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import socket
+import urllib.parse
 import uuid
 from io import BytesIO
 from pathlib import Path
@@ -271,11 +272,16 @@ class App:
             meta = self.uploads.get(data.get("fileId"))
             if not meta:
                 return
-            url = f"http://{self.ip}:{self.port}/download/{data['fileId']}"
-            ok = await self._post_peer(peer, {
-                "type": "file", "from": self.name, "fromId": self.id,
-                "name": meta["name"], "size": meta["size"], "url": url, "msgId": data.get("msgId"),
-            })
+            # push the bytes to the peer (same direction as chat), then point its
+            # browser at its own local copy — no reverse connection needed.
+            remote_id = await self._push_file(peer, meta)
+            ok = False
+            if remote_id:
+                ok = await self._post_peer(peer, {
+                    "type": "file", "from": self.name, "fromId": self.id,
+                    "name": meta["name"], "size": meta["size"],
+                    "url": f"/download/{remote_id}", "msgId": data.get("msgId"),
+                })
             await self._broadcast({"type": "status", "msgId": data.get("msgId"),
                                    "state": "sent" if ok else "failed"})
 
@@ -298,6 +304,31 @@ class App:
         self._save_known()
         await self.broadcast_peers()
         await self._post_peer(self.peers[pid], {"type": "hello", "from": self.name, "fromId": self.id})
+
+    async def _push_file(self, peer, meta):
+        url = f"http://{peer['ip']}:{peer['port']}/peer/upload"
+        headers = {"X-Filename": urllib.parse.quote(meta["name"])}
+        try:
+            with open(meta["path"], "rb") as f:
+                async with ClientSession(timeout=ClientTimeout(total=None)) as s:
+                    async with s.post(url, data=f, headers=headers) as r:
+                        if r.status == 200:
+                            return (await r.json()).get("id")
+        except Exception as e:
+            await self._broadcast({"type": "error", "text": f"File send failed: {e}"})
+        return None
+
+    async def peer_upload(self, request):
+        fid = uuid.uuid4().hex
+        path = UPLOAD_DIR / fid
+        name = urllib.parse.unquote(request.headers.get("X-Filename", "file"))
+        size = 0
+        with open(path, "wb") as f:
+            async for chunk in request.content.iter_chunked(1024 * 256):
+                size += len(chunk)
+                f.write(chunk)
+        self.uploads[fid] = {"path": str(path), "name": name, "size": size}
+        return web.json_response({"id": fid})
 
     async def _post_peer(self, peer, payload):
         payload = {**payload, "fromIp": self.ip, "fromPort": self.port}
@@ -367,6 +398,7 @@ async def serve(name, port, announce=True):
         web.get("/qr", app_obj.qr),
         web.get("/ws", app_obj.ws_handler),
         web.post("/peer/message", app_obj.peer_message),
+        web.post("/peer/upload", app_obj.peer_upload),
         web.post("/upload", app_obj.upload),
         web.get("/download/{id}", app_obj.download),
     ])
