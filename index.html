@@ -21,7 +21,10 @@
   .peer:hover { background: var(--panel2); }
   .peer.active { background: var(--accent); }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; }
-  .peer .pname { font-size: 14px; }
+  .peer .pname { font-size: 14px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .peer .act { opacity: 0; font-size: 12px; padding: 2px 4px; border-radius: 5px; flex: none; }
+  .peer:hover .act { opacity: .6; }
+  .peer .act:hover { opacity: 1; background: #ffffff22; }
   .empty { padding: 16px; color: var(--muted); font-size: 13px; }
   .addpeer { padding: 12px 14px; border-top: 1px solid #00000040; }
   .addpeer-title { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
@@ -89,11 +92,17 @@ let me = { name: "", id: "" };
 let peers = {};
 let active = null;
 const convos = {};   // peerId -> [ {mine, kind, ...} ]
+let aliases = {};    // ip -> custom display name
 
 const $ = id => document.getElementById(id);
 
 function save() { try { localStorage.setItem("td_convos", JSON.stringify(convos)); } catch (e) {} }
-function load() { try { Object.assign(convos, JSON.parse(localStorage.getItem("td_convos") || "{}")); } catch (e) {} }
+function load() {
+  try { Object.assign(convos, JSON.parse(localStorage.getItem("td_convos") || "{}")); } catch (e) {}
+  try { aliases = JSON.parse(localStorage.getItem("td_aliases") || "{}"); } catch (e) {}
+}
+function saveAliases() { try { localStorage.setItem("td_aliases", JSON.stringify(aliases)); } catch (e) {} }
+function displayName(p) { return (p && p.ip && aliases[p.ip]) || (p && p.name) || "Device"; }
 load();
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 
@@ -109,28 +118,57 @@ ws.onmessage = ev => {
 };
 
 function renderPeers(list) {
+  // dedupe by ip (a restarted peer can arrive under a new id)
+  const seen = {}, uniq = [];
+  list.forEach(p => {
+    const key = p.ip || p.id;
+    if (seen[key]) return;
+    seen[key] = 1; uniq.push(p);
+  });
   peers = {};
-  list.forEach(p => peers[p.id] = p);
+  uniq.forEach(p => peers[p.id] = p);
   const el = $("peers");
-  if (!list.length) { el.innerHTML = '<div class="empty">No devices found yet…</div>'; }
+  if (!uniq.length) { el.innerHTML = '<div class="empty">No devices yet. Add one by IP below.</div>'; }
   else {
     el.innerHTML = "";
-    list.forEach(p => {
+    uniq.forEach(p => {
       const d = document.createElement("div");
       d.className = "peer" + (p.id === active ? " active" : "");
-      d.innerHTML = `<span class="dot"></span><span class="pname"></span>`;
-      d.querySelector(".pname").textContent = p.name;
+      const dot = document.createElement("span"); dot.className = "dot";
+      const nm = document.createElement("span"); nm.className = "pname"; nm.textContent = displayName(p);
+      const edit = document.createElement("span"); edit.className = "act"; edit.textContent = "✏️"; edit.title = "Rename";
+      edit.onclick = e => { e.stopPropagation(); renamePeer(p); };
+      const rm = document.createElement("span"); rm.className = "act"; rm.textContent = "✕"; rm.title = "Remove";
+      rm.onclick = e => { e.stopPropagation(); removePeer(p); };
+      d.append(dot, nm, edit, rm);
       d.onclick = () => selectPeer(p.id);
       el.appendChild(d);
     });
   }
-  if (active && !peers[active]) { $("header").textContent = "Device went offline"; }
+  if (active && !peers[active]) { $("header").textContent = "Device removed or offline"; }
+}
+
+function renamePeer(p) {
+  if (!p.ip) return;
+  const name = prompt("Show this device as:", displayName(p));
+  if (name == null) return;
+  const t = name.trim();
+  if (t) aliases[p.ip] = t; else delete aliases[p.ip];
+  saveAliases();
+  renderPeers(Object.values(peers));
+  if (active === p.id) $("header").textContent = displayName(peers[p.id]);
+}
+
+function removePeer(p) {
+  if (!confirm(`Remove ${displayName(p)} from the sidebar?`)) return;
+  ws.send(JSON.stringify({ action: "removepeer", to: p.id }));
+  if (active === p.id) { active = null; $("composer").style.display = "none"; $("header").textContent = "Select a device to start"; $("msgs").innerHTML = '<div class="placeholder">Pick a device on the left.</div>'; }
 }
 
 function selectPeer(id) {
   active = id;
   $("composer").style.display = "flex";
-  $("header").textContent = peers[id]?.name || "Chat";
+  $("header").textContent = displayName(peers[id]) || "Chat";
   renderPeers(Object.values(peers));
   renderMsgs();
 }
@@ -138,7 +176,7 @@ function selectPeer(id) {
 function incoming(fromId, msg) {
   (convos[fromId] ||= []).push(msg);
   save();
-  const who = peers[fromId]?.name || "Someone";
+  const who = displayName(peers[fromId]) || "Someone";
   if (fromId === active && !document.hidden) { renderMsgs(); return; }
   toast(`New message from ${who}`);
   notify(who, msg.kind === "file" ? `Sent a file: ${msg.name}` : msg.text);

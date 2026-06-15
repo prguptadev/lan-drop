@@ -79,18 +79,18 @@ class App:
         ip = addrs[0] if addrs else None
         if not ip:
             return
-        self.peers[pid] = {
-            "id": pid,
-            "name": props.get("name", "Unknown"),
-            "ip": ip,
-            "port": info.port,
-            "_sname": name,
-        }
+        self._upsert_peer(pid, props.get("name", "Unknown"), ip, info.port, name)
         await self.broadcast_peers()
+
+    def _upsert_peer(self, pid, name, ip, port, sname):
+        # drop stale entries for the same ip (e.g. the peer restarted with a new id)
+        for old in [k for k, v in self.peers.items() if k != pid and v.get("ip") == ip]:
+            self.peers.pop(old, None)
+        self.peers[pid] = {"id": pid, "name": name, "ip": ip, "port": port, "_sname": sname}
 
     # ---------- browser fan-out ----------
     def _peer_list(self):
-        return [{"id": p["id"], "name": p["name"]} for p in self.peers.values()]
+        return [{"id": p["id"], "name": p["name"], "ip": p.get("ip")} for p in self.peers.values()]
 
     async def broadcast_peers(self):
         await self._broadcast({"type": "peers", "peers": self._peer_list()})
@@ -128,6 +128,10 @@ class App:
         if action == "addpeer":
             await self._add_peer_by_ip(data.get("ip"), int(data.get("port") or self.port))
             return
+        if action == "removepeer":
+            if self.peers.pop(data.get("to"), None):
+                await self.broadcast_peers()
+            return
         peer = self.peers.get(data.get("to"))
         if not peer:
             return
@@ -164,10 +168,7 @@ class App:
         if pid == self.id:
             await self._broadcast({"type": "error", "text": "That IP is this same Mac."})
             return
-        self.peers[pid] = {
-            "id": pid, "name": info.get("name", ip),
-            "ip": ip, "port": port, "_sname": f"manual:{ip}",
-        }
+        self._upsert_peer(pid, info.get("name", ip), ip, port, f"manual:{ip}")
         await self.broadcast_peers()
         # tell the other side who we are so it adds us back (bidirectional)
         await self._post_peer(self.peers[pid], {"type": "hello", "from": self.name, "fromId": self.id})
@@ -189,11 +190,8 @@ class App:
         # auto-learn the sender as a peer so replies work both ways
         fid = data.get("fromId")
         if fid and fid != self.id and data.get("fromIp") and fid not in self.peers:
-            self.peers[fid] = {
-                "id": fid, "name": data.get("from", "Unknown"),
-                "ip": data["fromIp"], "port": int(data.get("fromPort") or self.port),
-                "_sname": f"manual:{data['fromIp']}",
-            }
+            self._upsert_peer(fid, data.get("from", "Unknown"), data["fromIp"],
+                              int(data.get("fromPort") or self.port), f"manual:{data['fromIp']}")
             await self.broadcast_peers()
         if data.get("type") == "hello":
             return web.json_response({"ok": True})  # handshake only, don't show in chat
