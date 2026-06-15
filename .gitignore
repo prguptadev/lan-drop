@@ -9,6 +9,8 @@ __pycache__/
 # Per-machine state
 .displayname
 known_peers.json
+outbox.json
+config.json
 
 # macOS
 .DS_Store

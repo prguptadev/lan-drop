@@ -1,9 +1,19 @@
 import argparse
 import asyncio
+import fcntl
 import json
+import os
+import pty
+import shutil
 import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import termios
 import urllib.parse
 import uuid
+import zipfile
 from io import BytesIO
 from pathlib import Path
 
@@ -17,6 +27,9 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 NAME_FILE = BASE_DIR / ".displayname"
 KNOWN_FILE = BASE_DIR / "known_peers.json"
+OUTBOX_FILE = BASE_DIR / "outbox.json"
+CONFIG_FILE = BASE_DIR / "config.json"
+SAVE_DIR = Path.home() / "Downloads" / "LanDrop"
 
 
 def get_local_ip():
@@ -47,6 +60,29 @@ class App:
         self.browser_ws = set()
         self.aiozc = None
         self.browser = None
+        self.outbox = self._load_json(OUTBOX_FILE, {})   # ip -> [items] (store-and-forward)
+        self._flushing = set()                           # ips currently being flushed
+        cfg = self._load_json(CONFIG_FILE, {})
+        self.autosave = cfg.get("autosave", True)        # save incoming files to ~/Downloads/LanDrop
+        self.terminal_enabled = cfg.get("terminal_enabled", False)
+        self.terminal_pin = cfg.get("terminal_pin") or None
+
+    @staticmethod
+    def _load_json(path, default):
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return default if not isinstance(default, dict) else dict(default)
+
+    def _save_config(self):
+        try:
+            CONFIG_FILE.write_text(json.dumps({
+                "autosave": self.autosave,
+                "terminal_enabled": self.terminal_enabled,
+                "terminal_pin": self.terminal_pin,
+            }))
+        except Exception:
+            pass
 
     # ---------- discovery ----------
     async def start_discovery(self):
@@ -140,7 +176,9 @@ class App:
         while True:
             await asyncio.sleep(5)
             changed = False
+            came_online = []
             for p in list(self.peers.values()):
+                was_online = p.get("online", False)
                 info = await self._probe(p["ip"], p["port"])
                 if info:
                     rid = info.get("id")
@@ -148,17 +186,26 @@ class App:
                     if rid and rid != p["id"]:
                         self._upsert_peer(rid, nm, p["ip"], p["port"], p.get("_sname", "manual"), online=True)
                         changed = True
+                        target = self.peers[rid]
                     else:
-                        if not p.get("online") or p["name"] != nm:
+                        if not was_online or p["name"] != nm:
                             changed = True
                         p["online"] = True
                         p["name"] = nm
+                        target = p
+                    if target.get("terminal") != info.get("terminal", False):
+                        changed = True
+                    target["terminal"] = info.get("terminal", False)
+                    if not was_online:
+                        came_online.append(target)
                 else:
-                    if p.get("online"):
+                    if was_online:
                         changed = True
                     p["online"] = False
             if changed:
                 await self.broadcast_peers()
+            for peer in came_online:
+                await self._flush(peer)
 
     # ---------- subnet scan ----------
     async def scan(self):
@@ -186,7 +233,8 @@ class App:
 
     # ---------- browser fan-out ----------
     def _peer_list(self):
-        return [{"id": p["id"], "name": p["name"], "ip": p.get("ip"), "online": p.get("online", True)}
+        return [{"id": p["id"], "name": p["name"], "ip": p.get("ip"),
+                 "online": p.get("online", True), "terminal": p.get("terminal", False)}
                 for p in self.peers.values()]
 
     async def broadcast_peers(self):
@@ -207,7 +255,7 @@ class App:
         return web.FileResponse(BASE_DIR / "index.html")
 
     async def whoami(self, request):
-        return web.json_response({"id": self.id, "name": self.name})
+        return web.json_response({"id": self.id, "name": self.name, "terminal": self.terminal_enabled})
 
     async def qr(self, request):
         try:
@@ -225,7 +273,9 @@ class App:
         await ws.prepare(request)
         self.browser_ws.add(ws)
         await ws.send_str(json.dumps({"type": "self", "name": self.name, "id": self.id,
-                                      "ip": self.ip, "port": self.port}))
+                                      "ip": self.ip, "port": self.port, "autosave": self.autosave,
+                                      "terminalEnabled": self.terminal_enabled,
+                                      "terminalHasPin": bool(self.terminal_pin)}))
         await ws.send_str(json.dumps({"type": "peers", "peers": self._peer_list()}))
         try:
             async for msg in ws:
@@ -257,33 +307,43 @@ class App:
         if action == "scan":
             asyncio.ensure_future(self.scan())
             return
+        if action == "setautosave":
+            self.autosave = bool(data.get("on"))
+            self._save_config()
+            return
+        if action == "setterminal":
+            self.terminal_enabled = bool(data.get("enabled"))
+            pin = str(data.get("pin") or "").strip()
+            self.terminal_pin = pin or None
+            self._save_config()
+            await self._broadcast({"type": "termstate", "enabled": self.terminal_enabled,
+                                   "hasPin": bool(self.terminal_pin)})
+            return
+        if action == "reveal":
+            self._reveal_folder()
+            return
+        if action == "clipsend":
+            for pid in (data.get("toList") or [data.get("to")]):
+                peer = self.peers.get(pid)
+                if peer:
+                    await self._send_clipboard(peer)
+            return
         peer = self.peers.get(data.get("to"))
         if not peer:
             await self._broadcast({"type": "status", "msgId": data.get("msgId"), "state": "failed"})
             return
         if action == "chat":
-            ok = await self._post_peer(peer, {
-                "type": "chat", "from": self.name, "fromId": self.id,
-                "text": data.get("text"), "msgId": data.get("msgId"),
+            await self._deliver_or_queue(peer, {
+                "kind": "chat", "msgId": data.get("msgId"), "text": data.get("text"),
             })
-            await self._broadcast({"type": "status", "msgId": data.get("msgId"),
-                                   "state": "sent" if ok else "failed"})
         elif action == "file":
             meta = self.uploads.get(data.get("fileId"))
             if not meta:
                 return
-            # push the bytes to the peer (same direction as chat), then point its
-            # browser at its own local copy — no reverse connection needed.
-            remote_id = await self._push_file(peer, meta)
-            ok = False
-            if remote_id:
-                ok = await self._post_peer(peer, {
-                    "type": "file", "from": self.name, "fromId": self.id,
-                    "name": meta["name"], "size": meta["size"],
-                    "url": f"/download/{remote_id}", "msgId": data.get("msgId"),
-                })
-            await self._broadcast({"type": "status", "msgId": data.get("msgId"),
-                                   "state": "sent" if ok else "failed"})
+            await self._deliver_or_queue(peer, {
+                "kind": "file", "msgId": data.get("msgId"),
+                "name": meta["name"], "size": meta["size"], "path": meta["path"],
+            })
 
     async def _add_peer_by_ip(self, ip, port, quiet=False):
         ip = (ip or "").strip()
@@ -301,11 +361,15 @@ class App:
             await self._broadcast({"type": "error", "text": "That IP is this same Mac."})
             return
         self._upsert_peer(pid, info.get("name", ip), ip, port, f"manual:{ip}", online=True)
+        self.peers[pid]["terminal"] = info.get("terminal", False)
         self._save_known()
         await self.broadcast_peers()
         await self._post_peer(self.peers[pid], {"type": "hello", "from": self.name, "fromId": self.id})
+        await self._flush(self.peers[pid])
 
-    async def _push_file(self, peer, meta):
+    async def _push_file(self, peer, meta, quiet=False):
+        if not Path(meta["path"]).exists():
+            return None
         url = f"http://{peer['ip']}:{peer['port']}/peer/upload"
         headers = {"X-Filename": urllib.parse.quote(meta["name"])}
         try:
@@ -315,7 +379,8 @@ class App:
                         if r.status == 200:
                             return (await r.json()).get("id")
         except Exception as e:
-            await self._broadcast({"type": "error", "text": f"File send failed: {e}"})
+            if not quiet:
+                await self._broadcast({"type": "error", "text": f"File send failed: {e}"})
         return None
 
     async def peer_upload(self, request):
@@ -328,9 +393,95 @@ class App:
                 size += len(chunk)
                 f.write(chunk)
         self.uploads[fid] = {"path": str(path), "name": name, "size": size}
+        if self.autosave:
+            self._autosave_copy(path, name)
         return web.json_response({"id": fid})
 
-    async def _post_peer(self, peer, payload):
+    @staticmethod
+    def _safe_name(name):
+        # strip any path components a peer might send
+        name = Path(name).name or "file"
+        return name.replace("/", "_").replace("\\", "_")
+
+    def _autosave_copy(self, src, name):
+        try:
+            SAVE_DIR.mkdir(parents=True, exist_ok=True)
+            base = self._safe_name(name)
+            dest = SAVE_DIR / base
+            if dest.exists():
+                stem, suffix, i = dest.stem, dest.suffix, 1
+                while dest.exists():
+                    dest = SAVE_DIR / f"{stem} ({i}){suffix}"
+                    i += 1
+            shutil.copy2(src, dest)
+        except Exception:
+            pass
+
+    def _reveal_folder(self):
+        try:
+            SAVE_DIR.mkdir(parents=True, exist_ok=True)
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", str(SAVE_DIR)])
+            elif sys.platform.startswith("linux"):
+                subprocess.Popen(["xdg-open", str(SAVE_DIR)])
+        except Exception:
+            pass
+
+    # ---------- clipboard sync (macOS) ----------
+    def _clip_read(self):
+        """Returns ('text', str) | ('image', path) | None."""
+        try:
+            out = subprocess.run(["pbpaste"], capture_output=True, timeout=5)
+            text = out.stdout.decode("utf-8", errors="replace")
+            if text.strip():
+                return ("text", text)
+        except Exception:
+            pass
+        try:
+            tmp = UPLOAD_DIR / (uuid.uuid4().hex + ".png")
+            script = ('set thePng to (the clipboard as «class PNGf»)\n'
+                      f'set f to open for access POSIX file "{tmp}" with write permission\n'
+                      'write thePng to f\nclose access f')
+            subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+            if tmp.exists() and tmp.stat().st_size > 0:
+                return ("image", str(tmp))
+        except Exception:
+            pass
+        return None
+
+    def _clip_write_text(self, text):
+        try:
+            subprocess.run(["pbcopy"], input=(text or "").encode("utf-8"), timeout=5)
+        except Exception:
+            pass
+
+    def _clip_write_image(self, path):
+        try:
+            script = f'set the clipboard to (read (POSIX file "{path}") as «class PNGf»)'
+            subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+    async def _send_clipboard(self, peer):
+        clip = self._clip_read()
+        if not clip:
+            await self._broadcast({"type": "error", "text": "Clipboard is empty"})
+            return
+        kind, value = clip
+        if kind == "text":
+            ok = await self._post_peer(peer, {"type": "clip", "clipKind": "text",
+                                              "from": self.name, "fromId": self.id, "text": value})
+        else:
+            meta = {"path": value, "name": "clipboard.png", "size": Path(value).stat().st_size}
+            remote_id = await self._push_file(peer, meta)
+            ok = False
+            if remote_id:
+                ok = await self._post_peer(peer, {"type": "clip", "clipKind": "image",
+                                                  "from": self.name, "fromId": self.id, "fileId": remote_id})
+        await self._broadcast({"type": "toast",
+                               "text": f"Clipboard sent to {peer['name']}" if ok else f"Could not reach {peer['name']}"})
+
+    async def _post_peer(self, peer, payload, quiet=False):
         payload = {**payload, "fromIp": self.ip, "fromPort": self.port}
         url = f"http://{peer['ip']}:{peer['port']}/peer/message"
         try:
@@ -338,8 +489,70 @@ class App:
                 async with s.post(url, json=payload) as r:
                     return r.status == 200
         except Exception as e:
-            await self._broadcast({"type": "error", "text": f"Could not reach {peer['name']}: {e}"})
+            if not quiet:
+                await self._broadcast({"type": "error", "text": f"Could not reach {peer['name']}: {e}"})
             return False
+
+    # ---------- store-and-forward ----------
+    def _save_outbox(self):
+        try:
+            OUTBOX_FILE.write_text(json.dumps(self.outbox))
+        except Exception:
+            pass
+
+    def _enqueue(self, peer, item):
+        self.outbox.setdefault(peer["ip"], []).append({**item, "_port": peer.get("port", self.port)})
+        self._save_outbox()
+
+    async def _try_deliver(self, peer, item, quiet=True):
+        """Attempt one delivery. Returns True on success."""
+        if not peer.get("online", True):
+            return False
+        if item["kind"] == "chat":
+            return await self._post_peer(peer, {
+                "type": "chat", "from": self.name, "fromId": self.id,
+                "text": item.get("text"), "msgId": item.get("msgId"),
+            }, quiet=quiet)
+        # file
+        remote_id = await self._push_file(peer, {
+            "path": item["path"], "name": item["name"], "size": item["size"],
+        }, quiet=quiet)
+        if not remote_id:
+            return False
+        return await self._post_peer(peer, {
+            "type": "file", "from": self.name, "fromId": self.id,
+            "name": item["name"], "size": item["size"],
+            "url": f"/download/{remote_id}", "msgId": item.get("msgId"),
+        }, quiet=quiet)
+
+    async def _deliver_or_queue(self, peer, item):
+        ok = await self._try_deliver(peer, item, quiet=False)
+        if ok:
+            await self._broadcast({"type": "status", "msgId": item.get("msgId"), "state": "sent"})
+        else:
+            self._enqueue(peer, item)
+            await self._broadcast({"type": "status", "msgId": item.get("msgId"), "state": "queued"})
+
+    async def _flush(self, peer):
+        ip = peer["ip"]
+        if ip in self._flushing or ip not in self.outbox:
+            return
+        self._flushing.add(ip)
+        try:
+            remaining = []
+            for item in self.outbox.get(ip, []):
+                ok = await self._try_deliver(peer, item, quiet=True)
+                if ok:
+                    await self._broadcast({"type": "status", "msgId": item.get("msgId"), "state": "sent"})
+                else:
+                    remaining.append(item)
+            if remaining:
+                self.outbox[ip] = remaining
+            else:
+                self.outbox.pop(ip, None)
+            self._save_outbox()
+        finally:
+            self._flushing.discard(ip)
 
     async def peer_message(self, request):
         data = await request.json()
@@ -350,10 +563,21 @@ class App:
                               int(data.get("fromPort") or self.port), f"manual:{data['fromIp']}", online=True)
             self._save_known()
             await self.broadcast_peers()
+            asyncio.ensure_future(self._flush(self.peers[fid]))
         if mtype == "hello":
             return web.json_response({"ok": True})
         if mtype == "ack":
             await self._broadcast({"type": "status", "msgId": data.get("ackId"), "state": "delivered"})
+            return web.json_response({"ok": True})
+        if mtype == "clip":
+            if data.get("clipKind") == "text":
+                self._clip_write_text(data.get("text", ""))
+            elif data.get("clipKind") == "image":
+                meta = self.uploads.get(data.get("fileId"))
+                if meta:
+                    self._clip_write_image(meta["path"])
+            await self._broadcast({"type": "clip", "from": data.get("from", "Someone"),
+                                   "clipKind": data.get("clipKind")})
             return web.json_response({"ok": True})
         await self._broadcast(data)
         # send delivery ack back to the sender
@@ -379,6 +603,113 @@ class App:
         self.uploads[fid] = {"path": str(path), "name": filename, "size": size}
         return web.json_response({"id": fid, "name": filename, "size": size})
 
+    async def termws(self, request):
+        # Remote shell — OFF by default, PIN-gated. Runs on THIS machine.
+        if not self.terminal_enabled:
+            return web.Response(status=403, text="Terminal disabled on this device")
+        if self.terminal_pin and request.query.get("pin") != self.terminal_pin:
+            return web.Response(status=403, text="Incorrect PIN")
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+
+        master, slave = os.openpty()
+        shell = os.environ.get("SHELL", "/bin/zsh")
+        env = {**os.environ, "TERM": "xterm-256color"}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                shell, "-l", stdin=slave, stdout=slave, stderr=slave,
+                preexec_fn=os.setsid, env=env)
+        except Exception as e:
+            os.close(master)
+            os.close(slave)
+            await ws.send_str(f"\r\nFailed to start shell: {e}\r\n")
+            await ws.close()
+            return ws
+        os.close(slave)
+        os.set_blocking(master, False)
+        loop = asyncio.get_event_loop()
+
+        def on_master_read():
+            try:
+                data = os.read(master, 65536)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                data = b""
+            if data:
+                asyncio.ensure_future(ws.send_bytes(data))
+            else:
+                try:
+                    loop.remove_reader(master)
+                except Exception:
+                    pass
+
+        loop.add_reader(master, on_master_read)
+        try:
+            async for msg in ws:
+                if msg.type == web.WSMsgType.BINARY:
+                    os.write(master, msg.data)
+                elif msg.type == web.WSMsgType.TEXT:
+                    try:
+                        d = json.loads(msg.data)
+                        if isinstance(d, dict) and "resize" in d:
+                            cols, rows = d["resize"]
+                            fcntl.ioctl(master, termios.TIOCSWINSZ,
+                                        struct.pack("HHHH", int(rows), int(cols), 0, 0))
+                    except Exception:
+                        pass
+        finally:
+            try:
+                loop.remove_reader(master)
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            try:
+                os.close(master)
+            except Exception:
+                pass
+        return ws
+
+    async def upload_folder(self, request):
+        reader = await request.multipart()
+        workdir = Path(tempfile.mkdtemp(prefix="ldfolder_"))
+        folder_name = "folder"
+        try:
+            while True:
+                field = await reader.next()
+                if field is None:
+                    break
+                if field.name == "folderName":
+                    folder_name = (await field.text()).strip() or "folder"
+                    continue
+                rel = field.filename or uuid.uuid4().hex
+                # prevent path escape; keep it inside workdir
+                dest = (workdir / rel).resolve()
+                if not str(dest).startswith(str(workdir.resolve())):
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with open(dest, "wb") as f:
+                    while True:
+                        chunk = await field.read_chunk(1024 * 256)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            fid = uuid.uuid4().hex
+            zip_path = UPLOAD_DIR / fid
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+                for p in workdir.rglob("*"):
+                    if p.is_file():
+                        z.write(p, p.relative_to(workdir))
+            name = self._safe_name(folder_name) + ".zip"
+            size = zip_path.stat().st_size
+            self.uploads[fid] = {"path": str(zip_path), "name": name, "size": size}
+            return web.json_response({"id": fid, "name": name, "size": size})
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
     async def download(self, request):
         fid = request.match_info["id"]
         meta = self.uploads.get(fid)
@@ -391,7 +722,7 @@ class App:
 
 async def serve(name, port, announce=True):
     app_obj = App(name, port)
-    web_app = web.Application(client_max_size=0)  # unlimited upload size
+    web_app = web.Application(client_max_size=1024 ** 4)  # effectively unlimited (1 TB)
     web_app.add_routes([
         web.get("/", app_obj.index),
         web.get("/whoami", app_obj.whoami),
@@ -400,8 +731,13 @@ async def serve(name, port, announce=True):
         web.post("/peer/message", app_obj.peer_message),
         web.post("/peer/upload", app_obj.peer_upload),
         web.post("/upload", app_obj.upload),
+        web.post("/uploadfolder", app_obj.upload_folder),
         web.get("/download/{id}", app_obj.download),
+        web.get("/termws", app_obj.termws),
     ])
+    vendor_dir = BASE_DIR / "vendor"
+    if vendor_dir.is_dir():
+        web_app.router.add_static("/vendor/", path=str(vendor_dir))
     runner = web.AppRunner(web_app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)

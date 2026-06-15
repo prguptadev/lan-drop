@@ -4,6 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Lan Drop</title>
+<link rel="stylesheet" href="/vendor/xterm.css" />
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/xterm-addon-fit.js"></script>
 <style>
   :root {
     --bg: #1f1f23; --panel: #2a2a30; --panel2: #33333b; --accent: #5b8def;
@@ -70,6 +73,14 @@
   .row.me.grouped .bubble { border-top-right-radius: 6px; }
   .row.them.grouped .bubble { border-top-left-radius: 6px; }
   .bubble a.link { color: inherit; text-decoration: underline; }
+  .bubble pre.code { background: #00000038; border-radius: 8px; padding: 8px 10px; margin: 4px 0; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.45; overflow-x: auto; white-space: pre; }
+  .bubble code.inlinecode { background: #00000038; border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  html[data-theme="light"] .bubble pre.code, html[data-theme="light"] .bubble code.inlinecode { background: #00000012; }
+  .sresult { padding: 8px 6px; border-radius: 8px; cursor: pointer; }
+  .sresult:hover { background: var(--hover); }
+  .sr-name { font-size: 12px; color: var(--muted); }
+  .sr-snip { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  audio { height: 36px; max-width: 240px; }
   .meta { font-size: 10px; color: var(--muted); margin: 3px 6px 0; display: flex; gap: 6px; }
   .thumb { max-width: 240px; max-height: 240px; border-radius: 12px; display: block; cursor: pointer; }
   .filecard { display: flex; align-items: center; gap: 10px; min-width: 200px; max-width: 280px; }
@@ -83,6 +94,9 @@
   .composer input[type=text] { flex: 1; background: var(--panel2); border: none; color: var(--text); padding: 11px 14px; border-radius: 10px; font-size: 14px; outline: none; }
   .btn { background: var(--accent); border: none; color: #fff; padding: 10px 16px; border-radius: 10px; cursor: pointer; font-size: 14px; }
   .btn.icon { background: var(--panel2); color: var(--text); padding: 10px 13px; }
+  .btn.icon.recording { background: #c0392b; color: #fff; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+  .btn.icon.recording .ic { animation: pulse 1s infinite; }
   .ic { width: 16px; height: 16px; display: inline-block; vertical-align: -3px; }
   .btn .ic { width: 18px; height: 18px; vertical-align: -4px; }
   .btn.ghost .ic { margin-right: 4px; }
@@ -106,7 +120,13 @@
   .modal .qrwrap { background: #fff; padding: 12px; border-radius: 10px; display: flex; justify-content: center; }
   .modal .qrwrap img, .modal .qrwrap svg { width: 240px; height: 240px; }
   .modal .url { text-align: center; margin-top: 10px; font-size: 13px; color: var(--accent); word-break: break-all; }
+  .termbox { background: #16161b; border-radius: 12px; width: 88vw; height: 82vh; max-width: 1100px; display: flex; flex-direction: column; overflow: hidden; }
+  .termhead { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: #0f0f13; color: #e8e8ec; font-size: 13px; font-weight: 600; }
+  .termhead .act { cursor: pointer; opacity: .7; }
+  .termhead .act:hover { opacity: 1; }
+  #termContainer { flex: 1; padding: 6px 8px; overflow: hidden; }
   @media (max-width: 720px) {
+    .termbox { width: 100vw; height: 100vh; border-radius: 0; }
     .sidebar { width: 100%; }
     .main { position: absolute; inset: 0; display: none; }
     body.show-chat .sidebar { display: none; }
@@ -121,9 +141,10 @@
     <div class="me">
       <div class="name-row">
         <span class="name" id="myName">…</span>
-        <span class="act" id="qrBtn" title="Show QR to connect">▦</span>
-        <span class="act" id="settingsBtn" title="Settings">⚙️</span>
-        <span class="act" id="editMe" title="Rename this Mac">✏️</span>
+        <span class="act" id="searchBtn" title="Search messages"></span>
+        <span class="act" id="qrBtn" title="Show QR to connect"></span>
+        <span class="act" id="settingsBtn" title="Settings"></span>
+        <span class="act" id="editMe" title="Rename this Mac"></span>
       </div>
       <div class="sub" id="meSub">on this network</div>
     </div>
@@ -151,19 +172,30 @@
     <div class="header">
       <span class="backBtn" id="backBtn">‹</span>
       <span class="htitle" id="header">Select a device to start</span>
+      <span class="hbtn" id="termBtn" style="display:none">Terminal</span>
       <span class="hbtn" id="clearBtn" style="display:none">Clear chat</span>
     </div>
     <div class="msgs" id="msgs"><div class="placeholder">Pick a device or group on the left.</div></div>
     <div class="droplay" id="droplay">Drop file to send</div>
     <div class="composer" id="composer" style="display:none">
       <input type="file" id="fileInput" multiple style="display:none" />
-      <button class="btn icon" id="attachBtn" title="Send file">📎</button>
+      <input type="file" id="folderInput" webkitdirectory multiple style="display:none" />
+      <button class="btn icon" id="micBtn" title="Record voice memo"></button>
+      <button class="btn icon" id="clipBtn" title="Send my clipboard to this device"></button>
+      <button class="btn icon" id="attachBtn" title="Send file"></button>
+      <button class="btn icon" id="folderBtn" title="Send a folder (zipped)"></button>
       <input type="text" id="text" placeholder="Type a message…  (paste a screenshot to send it)" autocomplete="off" />
       <button class="btn" id="sendBtn">Send</button>
     </div>
   </div>
 
   <div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
+  <div class="overlay" id="termOverlay">
+    <div class="termbox">
+      <div class="termhead"><span id="termTitle">Terminal</span><span class="act" id="termClose">✕</span></div>
+      <div id="termContainer"></div>
+    </div>
+  </div>
   <div class="toast" id="toast"></div>
 
 <script>
@@ -182,6 +214,7 @@ let settings = { preview: true, sound: true, theme: "dark" };
 const $ = id => document.getElementById(id);
 const rid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 const isImg = n => /\.(png|jpe?g|gif|webp|bmp|svg|heic)$/i.test(n || "");
+const isAudio = n => /\.(webm|ogg|mp3|wav|m4a|aac|opus)$/i.test(n || "");
 const fmtTime = ts => ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
 function save() { try { localStorage.setItem("td_convos", JSON.stringify(convos)); } catch (e) {} }
@@ -225,6 +258,8 @@ function handleMsg(ev) {
   else if (m.type === "file") incoming(m.fromId, { id: m.msgId, mine: false, kind: "file", name: m.name, size: m.size, url: m.url, isImage: isImg(m.name), ts: Date.now(), fromId: m.fromId });
   else if (m.type === "status") updateStatus(m.msgId, m.state);
   else if (m.type === "scandone") toast(`Scan complete — found ${m.found} device(s)`);
+  else if (m.type === "clip") toast(`Clipboard from ${m.from} — ready to paste (⌘V)`);
+  else if (m.type === "toast") toast(m.text);
   else if (m.type === "error") toast(m.text);
 }
 
@@ -303,6 +338,7 @@ function selectPeer(id) {
   document.body.classList.add("show-chat");
   $("composer").style.display = "flex";
   $("clearBtn").style.display = "block";
+  $("termBtn").style.display = peers[id] && peers[id].terminal ? "block" : "none";
   $("header").textContent = displayName(peers[id]) || "Chat";
   renderPeers(Object.values(peers)); renderGroups(); renderMsgs();
 }
@@ -313,9 +349,57 @@ function selectGroup(id) {
   const g = groups.find(x => x.id === id);
   $("composer").style.display = "flex";
   $("clearBtn").style.display = "block";
+  $("termBtn").style.display = "none";
   $("header").textContent = (g ? g.name : "Group");
   renderPeers(Object.values(peers)); renderGroups(); renderMsgs();
 }
+
+/* ---------- remote terminal ---------- */
+function loadPins() { try { return JSON.parse(localStorage.getItem("td_pins") || "{}"); } catch (e) { return {}; } }
+function savePin(ip, pin) { const p = loadPins(); if (pin) p[ip] = pin; else delete p[ip]; try { localStorage.setItem("td_pins", JSON.stringify(p)); } catch (e) {} }
+let curTerm = null;
+
+$("termBtn").onclick = () => {
+  if (activeType !== "peer") return;
+  const p = peers[active]; if (!p || !p.terminal) { toast("Terminal isn't enabled on that device"); return; }
+  let pin = loadPins()[p.ip] || "";
+  if (!pin) { pin = (prompt(`Enter the PIN set on ${displayName(p)} to open its terminal:`) || "").trim(); if (!pin) return; savePin(p.ip, pin); }
+  openTerminal(p, pin);
+};
+
+function openTerminal(p, pin) {
+  if (typeof Terminal === "undefined") { toast("Terminal library not loaded"); return; }
+  $("termContainer").innerHTML = "";
+  const term = new Terminal({ cursorBlink: true, fontSize: 13, fontFamily: "ui-monospace, Menlo, monospace", theme: { background: "#16161b" } });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open($("termContainer"));
+  const tws = new WebSocket(`ws://${p.ip}:${p.port}/termws?pin=${encodeURIComponent(pin)}`);
+  tws.binaryType = "arraybuffer";
+  let opened = false;
+  const doResize = () => { try { fit.fit(); if (tws.readyState === 1) tws.send(JSON.stringify({ resize: [term.cols, term.rows] })); } catch (e) {} };
+  tws.onopen = () => { opened = true; setTimeout(doResize, 30); };
+  tws.onmessage = e => { term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data)); };
+  tws.onclose = () => { if (!opened) { savePin(p.ip, ""); toast("Terminal refused — wrong PIN or not enabled"); closeTerminal(); } else term.write("\r\n\x1b[31m[disconnected]\x1b[0m\r\n"); };
+  tws.onerror = () => { if (!opened) { savePin(p.ip, ""); toast("Could not open terminal"); } };
+  term.onData(d => { if (tws.readyState === 1) tws.send(new TextEncoder().encode(d)); });
+  window.addEventListener("resize", doResize);
+  curTerm = { term, ws: tws, resize: doResize };
+  $("termTitle").textContent = `Terminal — ${displayName(p)}`;
+  $("termOverlay").classList.add("show");
+  setTimeout(() => { doResize(); term.focus(); }, 60);
+}
+
+function closeTerminal() {
+  $("termOverlay").classList.remove("show");
+  if (curTerm) {
+    window.removeEventListener("resize", curTerm.resize);
+    try { curTerm.ws.close(); } catch (e) {}
+    try { curTerm.term.dispose(); } catch (e) {}
+    curTerm = null;
+  }
+}
+$("termClose").onclick = closeTerminal;
 $("backBtn").onclick = () => document.body.classList.remove("show-chat");
 
 /* ---------- messages ---------- */
@@ -342,7 +426,7 @@ function currentMessages() {
   }
   return convos[active] || [];
 }
-function tickFor(s) { return s === "delivered" ? "✓✓" : s === "sent" ? "✓" : s === "failed" ? "⚠️" : "🕓"; }
+function tickFor(s) { return s === "delivered" ? "✓✓" : s === "sent" ? "✓" : s === "failed" ? "⚠️" : s === "queued" ? "⏳" : "🕓"; }
 
 function dayLabel(ts) {
   const d = new Date(ts), now = new Date();
@@ -354,17 +438,35 @@ function dayLabel(ts) {
   if (d.getFullYear() !== now.getFullYear()) opt.year = "numeric";
   return d.toLocaleDateString([], opt);
 }
-function linkify(el, text) {
-  const re = /(https?:\/\/[^\s]+)/g;
+function renderRichText(container, text) {
+  // fenced code blocks first (```), then inline formatting on the rest
+  const parts = String(text).split("```");
+  parts.forEach((part, i) => {
+    if (i % 2 === 1) {
+      const pre = document.createElement("pre"); pre.className = "code";
+      let body = part;
+      const nl = part.indexOf("\n");
+      if (nl !== -1 && /^[a-zA-Z0-9+#.\-]*$/.test(part.slice(0, nl).trim())) body = part.slice(nl + 1);
+      pre.textContent = body.replace(/\n$/, "");
+      container.appendChild(pre);
+    } else {
+      renderInline(container, part);
+    }
+  });
+}
+function renderInline(container, text) {
+  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(https?:\/\/[^\s]+)/g;
   let last = 0, m;
   while ((m = re.exec(text)) !== null) {
-    if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
-    const a = document.createElement("a");
-    a.className = "link"; a.href = m[0]; a.textContent = m[0]; a.target = "_blank"; a.rel = "noopener noreferrer";
-    el.appendChild(a);
-    last = m.index + m[0].length;
+    if (m.index > last) container.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const tok = m[0];
+    if (tok.startsWith("`")) { const c = document.createElement("code"); c.className = "inlinecode"; c.textContent = tok.slice(1, -1); container.appendChild(c); }
+    else if (tok.startsWith("**")) { const s = document.createElement("strong"); s.textContent = tok.slice(2, -2); container.appendChild(s); }
+    else if (tok.startsWith("*")) { const s = document.createElement("em"); s.textContent = tok.slice(1, -1); container.appendChild(s); }
+    else { const a = document.createElement("a"); a.className = "link"; a.href = tok; a.textContent = tok; a.target = "_blank"; a.rel = "noopener noreferrer"; container.appendChild(a); }
+    last = m.index + tok.length;
   }
-  if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+  if (last < text.length) container.appendChild(document.createTextNode(text.slice(last)));
 }
 
 function fileCard(m) {
@@ -398,11 +500,13 @@ function renderMsgs() {
       const s = document.createElement("div"); s.className = "sender"; s.textContent = m.fromName; row.appendChild(s);
     }
     const b = document.createElement("div"); b.className = "bubble";
-    if (m.kind === "text") linkify(b, m.text);
+    if (m.kind === "text") renderRichText(b, m.text);
     else if (m.isImage && settings.preview && (m.previewUrl || m.url)) {
       const img = document.createElement("img"); img.className = "thumb"; img.src = m.previewUrl || m.url;
       if (m.url) img.onclick = () => { const a = document.createElement("a"); a.href = m.url; a.download = m.name; a.click(); };
       b.appendChild(img);
+    } else if (isAudio(m.name) && (m.previewUrl || m.url)) {
+      const au = document.createElement("audio"); au.controls = true; au.src = m.previewUrl || m.url; b.appendChild(au);
     } else b.appendChild(fileCard(m));
     row.appendChild(b);
     const meta = document.createElement("div"); meta.className = "meta";
@@ -454,7 +558,8 @@ function sendFileToActive(file) {
   const targets = activeMembers();
   if (!targets.length) { toast("No reachable devices in this view"); return; }
   const isI = isImg(file.name);
-  const entry = { id: rid(), mine: true, kind: "file", name: file.name, size: file.size, url: null, previewUrl: isI ? URL.createObjectURL(file) : null, isImage: isI, ts: Date.now(), status: "sending" };
+  const localPreview = (isI || isAudio(file.name)) ? URL.createObjectURL(file) : null;
+  const entry = { id: rid(), mine: true, kind: "file", name: file.name, size: file.size, url: null, previewUrl: localPreview, isImage: isI, ts: Date.now(), status: "sending" };
   (convos[active] ||= []).push(entry); renderMsgs();
   const fd = new FormData(); fd.append("file", file);
   const xhr = new XMLHttpRequest(); xhr.open("POST", "/upload");
@@ -479,6 +584,64 @@ $("sendBtn").onclick = sendText;
 $("text").addEventListener("keydown", e => { if (e.key === "Enter") sendText(); });
 $("attachBtn").onclick = () => $("fileInput").click();
 $("fileInput").onchange = () => { [...$("fileInput").files].forEach(sendFileToActive); $("fileInput").value = ""; };
+
+$("clipBtn").onclick = () => {
+  const targets = activeMembers();
+  if (!targets.length) { toast("Pick a device first"); return; }
+  wsSend({ action: "clipsend", toList: targets });
+  toast("Sending clipboard…");
+};
+
+// voice memo
+let mediaRecorder = null, recChunks = [];
+$("micBtn").onclick = async () => {
+  if (mediaRecorder && mediaRecorder.state === "recording") { mediaRecorder.stop(); return; }
+  if (!active) { toast("Pick a device first"); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream);
+    recChunks = [];
+    mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) recChunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      $("micBtn").innerHTML = svg("mic"); $("micBtn").classList.remove("recording");
+      if (recChunks.length) {
+        const blob = new Blob(recChunks, { type: "audio/webm" });
+        sendFileToActive(new File([blob], `voice-${Date.now()}.webm`, { type: "audio/webm" }));
+      }
+    };
+    mediaRecorder.start();
+    $("micBtn").innerHTML = svg("stop"); $("micBtn").classList.add("recording");
+    toast("Recording… tap the mic again to send");
+  } catch (e) { toast("Microphone permission denied"); }
+};
+
+// folder send (zipped on the server)
+$("folderBtn").onclick = () => $("folderInput").click();
+$("folderInput").onchange = () => {
+  const files = [...$("folderInput").files];
+  $("folderInput").value = "";
+  if (!files.length || !active) return;
+  const targets = activeMembers();
+  if (!targets.length) { toast("Pick a device first"); return; }
+  const folderName = (files[0].webkitRelativePath || "folder").split("/")[0] || "folder";
+  const entry = { id: rid(), mine: true, kind: "file", name: folderName + ".zip", size: files.reduce((a, f) => a + f.size, 0), url: null, ts: Date.now(), status: "sending" };
+  (convos[active] ||= []).push(entry); renderMsgs();
+  const fd = new FormData();
+  fd.append("folderName", folderName);
+  files.forEach(f => fd.append("f", f, f.webkitRelativePath || f.name));
+  const xhr = new XMLHttpRequest(); xhr.open("POST", "/uploadfolder");
+  xhr.upload.onprogress = e => { if (e.lengthComputable) { entry.prog = Math.round(e.loaded / e.total * 100); if (active) renderMsgs(); } };
+  xhr.onload = () => {
+    if (xhr.status === 200) {
+      const r = JSON.parse(xhr.responseText); entry.prog = null; entry.name = r.name; entry.size = r.size;
+      targets.forEach(pid => { const mid = targets.length === 1 ? entry.id : rid(); msgIndex[mid] = { key: active, entry }; wsSend({ action: "file", to: pid, fileId: r.id, msgId: mid }); });
+    } else { entry.status = "failed"; toast("Folder send failed"); }
+    save(); if (active) renderMsgs();
+  };
+  xhr.onerror = () => { entry.status = "failed"; if (active) renderMsgs(); };
+  xhr.send(fd);
+};
 
 $("clearBtn").onclick = () => {
   if (!active || !confirm("Clear this conversation?")) return;
@@ -515,15 +678,71 @@ $("settingsBtn").onclick = () => {
     <label class="mp"><input type="checkbox" id="setDark" ${settings.theme !== "light" ? "checked" : ""}> Dark mode</label>
     <label class="mp"><input type="checkbox" id="setPreview" ${settings.preview ? "checked" : ""}> Show image previews in chat</label>
     <label class="mp"><input type="checkbox" id="setSound" ${settings.sound ? "checked" : ""}> Play sound on new message</label>
-    <div class="actions"><button class="btn" id="setSave">Done</button></div>`);
+    <label class="mp"><input type="checkbox" id="setAutosave" ${me.autosave ? "checked" : ""}> Auto-save received files to Downloads/LanDrop</label>
+    <label class="mp"><input type="checkbox" id="setTerm" ${me.terminalEnabled ? "checked" : ""}> Enable remote terminal on this Mac (PIN-protected)</label>
+    <div class="actions" style="justify-content:space-between">
+      <button class="btn icon" id="revealBtn">Open folder</button>
+      <button class="btn" id="setSave">Done</button>
+    </div>`);
   $("setDark").onchange = () => { settings.theme = $("setDark").checked ? "dark" : "light"; applyTheme(); };
+  $("revealBtn").onclick = () => wsSend({ action: "reveal" });
   $("setSave").onclick = () => {
     settings.preview = $("setPreview").checked;
     settings.sound = $("setSound").checked;
     settings.theme = $("setDark").checked ? "dark" : "light";
+    me.autosave = $("setAutosave").checked;
+    wsSend({ action: "setautosave", on: me.autosave });
+    const termOn = $("setTerm").checked;
+    if (termOn && !me.terminalEnabled) {
+      const pin = (prompt("Set a PIN to protect terminal access (the other Mac enters it once):") || "").trim();
+      if (pin) { wsSend({ action: "setterminal", enabled: true, pin }); me.terminalEnabled = true; }
+    } else if (!termOn && me.terminalEnabled) {
+      wsSend({ action: "setterminal", enabled: false }); me.terminalEnabled = false;
+    }
     saveSettings(); applyTheme(); closeModal(); if (active) renderMsgs();
   };
 };
+
+$("searchBtn").onclick = () => {
+  openModal(`<h3>Search messages</h3>
+    <input type="text" id="searchInput" placeholder="Type to search all chats…" />
+    <div id="searchResults"></div>`);
+  $("searchInput").oninput = runSearch;
+  $("searchInput").focus();
+};
+function labelForKey(key) {
+  if (peers[key]) return displayName(peers[key]);
+  const g = groups.find(x => x.id === key); if (g) return g.name;
+  return "Conversation";
+}
+function openKey(key) {
+  if (groups.find(x => x.id === key)) selectGroup(key);
+  else if (peers[key]) selectPeer(key);
+  else toast("That device isn't connected right now");
+}
+function runSearch() {
+  const q = $("searchInput").value.trim().toLowerCase();
+  const box = $("searchResults");
+  if (!q) { box.innerHTML = ""; return; }
+  const results = [];
+  Object.keys(convos).forEach(key => {
+    (convos[key] || []).forEach(m => {
+      const hay = (m.kind === "text" ? m.text : m.name) || "";
+      if (hay.toLowerCase().includes(q)) results.push({ key, m, hay });
+    });
+  });
+  results.sort((a, b) => (b.m.ts || 0) - (a.m.ts || 0));
+  if (!results.length) { box.innerHTML = '<div class="empty">No matches</div>'; return; }
+  box.innerHTML = "";
+  results.slice(0, 60).forEach(r => {
+    const d = document.createElement("div"); d.className = "sresult";
+    const nm = document.createElement("div"); nm.className = "sr-name"; nm.textContent = labelForKey(r.key) + " · " + fmtTime(r.m.ts);
+    const sn = document.createElement("div"); sn.className = "sr-snip"; sn.textContent = r.hay.slice(0, 140);
+    d.append(nm, sn);
+    d.onclick = () => { closeModal(); openKey(r.key); };
+    box.appendChild(d);
+  });
+}
 
 $("qrBtn").onclick = () => {
   openModal(`<h3>Connect a phone or Mac</h3>
@@ -622,6 +841,10 @@ const ICONS = {
   archive: '<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>',
   film: '<rect x="2" y="2" width="20" height="20" rx="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/>',
   music: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+  clipboard: '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/>',
+  mic: '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
 };
 function svg(name) {
   return `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ICONS.file}</svg>`;
@@ -636,11 +859,15 @@ function fileIconName(name) {
   return "file";
 }
 function applyIcons() {
+  $("searchBtn").innerHTML = svg("search");
   $("qrBtn").innerHTML = svg("qr");
   $("settingsBtn").innerHTML = svg("settings");
   $("editMe").innerHTML = svg("pencil");
   $("backBtn").innerHTML = svg("back");
   $("attachBtn").innerHTML = svg("paperclip");
+  $("clipBtn").innerHTML = svg("clipboard");
+  $("micBtn").innerHTML = svg("mic");
+  $("folderBtn").innerHTML = svg("folder");
   $("sendBtn").innerHTML = svg("send");
   $("newGroupBtn").innerHTML = svg("plus");
   $("scanBtn").innerHTML = svg("search") + "Scan network";
