@@ -15,6 +15,7 @@ import os
 import urllib.parse
 from pathlib import Path
 
+import aiohttp
 from aiohttp import ClientSession, ClientTimeout
 
 
@@ -22,9 +23,23 @@ IGNORE_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "
                ".next", "target", ".idea", ".gradle", ".cache", ".pytest_cache", ".mypy_cache",
                ".DS_Store", ".terraform", "vendor", ".turbo", ".parcel-cache"}
 
+# Skip big blobs/archives/media/model weights — code sync should stay lean.
+IGNORE_EXT = {".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".rar", ".7z", ".iso", ".dmg",
+              ".pkg", ".mp4", ".mov", ".mkv", ".avi", ".webm", ".mp3", ".wav", ".bin",
+              ".ckpt", ".safetensors", ".pt", ".pth", ".h5", ".pkl", ".onnx", ".parquet",
+              ".model", ".weights", ".sqlite", ".db", ".img"}
+MAX_FILE_BYTES = 100 * 1024 * 1024  # 100 MB per-file cap
 
-def is_ignored(rel):
-    return any(part in IGNORE_DIRS for part in rel.split("/"))
+
+def is_ignored(rel, size=None):
+    if any(part in IGNORE_DIRS for part in rel.split("/")):
+        return True
+    ext = ("." + rel.rsplit(".", 1)[-1].lower()) if "." in rel else ""
+    if ext in IGNORE_EXT:
+        return True
+    if size is not None and size > MAX_FILE_BYTES:
+        return True
+    return False
 
 
 def _sig(path: Path):
@@ -41,11 +56,10 @@ def local_manifest(root: Path):
     for p in root.rglob("*"):
         if p.is_file():
             rel = p.relative_to(root).as_posix()
-            if is_ignored(rel):
-                continue
             s = _sig(p)
-            if s:
-                out[rel] = s
+            if not s or is_ignored(rel, s[1]):
+                continue
+            out[rel] = s
     return out
 
 
@@ -71,8 +85,10 @@ class SyncSession:
         self.base_local = {}  # rel -> (mtime, size) last seen locally
         self._task = None
         self._stop = False
+        self._initialized = False
         self.status = "starting"
         self.files = 0
+        self._last_error = None
 
     # ---- lifecycle ----
     async def start(self):
@@ -86,20 +102,22 @@ class SyncSession:
 
     async def _run(self):
         try:
-            self.status = "pulling…"
-            await self._initial()
-            self.files = len(self.base_host)
-            self.status = f"synced · {self.files} files"
             while not self._stop:
-                await asyncio.sleep(self.INTERVAL)
                 try:
+                    if not self._initialized:
+                        self.status = "connecting…"
+                        await self._initial()
+                        self._initialized = True
                     await self._cycle()
                     self.files = len(self.base_host)
-                    self.status = f"synced · {self.files} files"
+                    self.status = (f"error: {self._last_error}" if self._last_error
+                                   else f"synced · {self.files} files")
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    self.status = "offline (retrying)"
+                except Exception as e:
+                    self.status = f"paused: {e}"
+                    await self._emit(f"sync paused — {e}")
+                await asyncio.sleep(self.INTERVAL)
         except asyncio.CancelledError:
             pass
 
@@ -116,32 +134,47 @@ class SyncSession:
         return f"{self.base}/fs/{ep}?" + urllib.parse.urlencode(params)
 
     async def _get_manifest(self):
-        async with ClientSession(timeout=ClientTimeout(total=30)) as s:
-            async with s.get(self._url("manifest")) as r:
-                if r.status != 200:
-                    raise RuntimeError(f"host returned {r.status}")
-                data = await r.json()
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=30)) as s:
+                async with s.get(self._url("manifest")) as r:
+                    if r.status == 403:
+                        raise RuntimeError("host refused (wrong PIN)")
+                    if r.status == 404:
+                        raise RuntimeError("shared folder not found on host")
+                    if r.status != 200:
+                        raise RuntimeError(f"host HTTP {r.status}")
+                    data = await r.json()
+        except aiohttp.ClientError as e:
+            raise RuntimeError(f"can't reach host ({e.__class__.__name__})")
         return {k: tuple(v) for k, v in data.get("files", {}).items()}
 
     async def _pull(self, rel):
         dest = self.local / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        async with ClientSession(timeout=ClientTimeout(total=None)) as s:
-            async with s.get(self._url("read", path=rel)) as r:
-                if r.status != 200:
-                    raise RuntimeError(f"read {rel}: {r.status}")
-                with open(dest, "wb") as f:
-                    async for chunk in r.content.iter_chunked(1024 * 256):
-                        f.write(chunk)
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=None, sock_connect=15, sock_read=120)) as s:
+                async with s.get(self._url("read", path=rel)) as r:
+                    if r.status != 200:
+                        raise RuntimeError(f"read HTTP {r.status}")
+                    with open(dest, "wb") as f:
+                        async for chunk in r.content.iter_chunked(1024 * 256):
+                            f.write(chunk)
+        except aiohttp.ClientError as e:
+            raise RuntimeError(f"read failed ({e.__class__.__name__})")
 
     async def _push(self, rel):
         src = self.local / rel
-        async with ClientSession(timeout=ClientTimeout(total=None)) as s:
-            with open(src, "rb") as f:
-                async with s.post(self._url("write", path=rel), data=f) as r:
-                    if r.status != 200:
-                        raise RuntimeError(f"write {rel}: {r.status}")
-                    return await r.json()
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=None, sock_connect=15, sock_read=120)) as s:
+                with open(src, "rb") as f:
+                    async with s.post(self._url("write", path=rel), data=f) as r:
+                        if r.status == 403:
+                            raise RuntimeError("write refused (wrong PIN)")
+                        if r.status != 200:
+                            raise RuntimeError(f"write HTTP {r.status}")
+                        return await r.json()
+        except aiohttp.ClientError as e:
+            raise RuntimeError(f"write failed ({e.__class__.__name__})")
 
     async def _del_host(self, rel):
         async with ClientSession(timeout=ClientTimeout(total=15)) as s:
@@ -149,69 +182,82 @@ class SyncSession:
 
     # ---- sync logic ----
     async def _initial(self):
+        self.status = "scanning host…"
         host = await self._get_manifest()
         loc = local_manifest(self.local)
-        for rel, hsig in host.items():
-            if rel not in loc:
-                await self._pull(rel)
+        to_pull = [rel for rel in host if rel not in loc]
+        total = len(to_pull)
+        for i, rel in enumerate(to_pull, 1):
+            self.status = f"pulling {i}/{total}…"
+            await self._pull(rel)
         # adopt baselines
         loc = local_manifest(self.local)
         self.base_host = dict(host)
         self.base_local = {rel: loc.get(rel) for rel in host}
         # push any purely-local files that the host doesn't have
-        for rel in list(loc):
-            if rel not in host:
-                meta = await self._push(rel)
-                self.base_host[rel] = (int(meta.get("mtime", 0)), int(meta.get("size", 0)))
-                self.base_local[rel] = loc[rel]
+        extra = [rel for rel in loc if rel not in host]
+        for i, rel in enumerate(extra, 1):
+            self.status = f"pushing {i}/{len(extra)}…"
+            meta = await self._push(rel)
+            self.base_host[rel] = (int(meta.get("mtime", 0)), int(meta.get("size", 0)))
+            self.base_local[rel] = loc[rel]
         await self._emit(f"initial sync done ({len(self.base_host)} files)")
 
     async def _cycle(self):
-        host = await self._get_manifest()
+        host = await self._get_manifest()  # raises if host unreachable/wrong pin
         loc = local_manifest(self.local)
         rels = set(host) | set(loc) | set(self.base_host) | set(self.base_local)
         pulled = pushed = deleted = 0
+        errors = []
         for rel in rels:
-            h = host.get(rel)
-            l = loc.get(rel)
-            h_changed = h != self.base_host.get(rel)
-            l_changed = l != self.base_local.get(rel)
-            if h and l:
-                if h_changed and not l_changed:
-                    await self._pull(rel); pulled += 1
-                    self.base_host[rel] = h; self.base_local[rel] = _sig(self.local / rel)
-                elif l_changed and not h_changed:
-                    meta = await self._push(rel); pushed += 1
-                    self.base_host[rel] = (int(meta.get("mtime", 0)), int(meta.get("size", 0)))
-                    self.base_local[rel] = l
-                elif h_changed and l_changed:
-                    await self._emit(f"conflict on {rel} — keeping host copy")
-                    await self._pull(rel); pulled += 1
-                    self.base_host[rel] = h; self.base_local[rel] = _sig(self.local / rel)
-            elif h and not l:
-                if self.base_local.get(rel) is not None:
-                    await self._del_host(rel); deleted += 1
-                    self.base_host.pop(rel, None); self.base_local.pop(rel, None)
+            try:
+                h = host.get(rel)
+                l = loc.get(rel)
+                h_changed = h != self.base_host.get(rel)
+                l_changed = l != self.base_local.get(rel)
+                if h and l:
+                    if h_changed and not l_changed:
+                        await self._pull(rel); pulled += 1
+                        self.base_host[rel] = h; self.base_local[rel] = _sig(self.local / rel)
+                    elif l_changed and not h_changed:
+                        meta = await self._push(rel); pushed += 1
+                        self.base_host[rel] = (int(meta.get("mtime", 0)), int(meta.get("size", 0)))
+                        self.base_local[rel] = l
+                    elif h_changed and l_changed:
+                        await self._emit(f"conflict on {rel} — keeping host copy")
+                        await self._pull(rel); pulled += 1
+                        self.base_host[rel] = h; self.base_local[rel] = _sig(self.local / rel)
+                elif h and not l:
+                    if self.base_local.get(rel) is not None:
+                        await self._del_host(rel); deleted += 1
+                        self.base_host.pop(rel, None); self.base_local.pop(rel, None)
+                    else:
+                        await self._pull(rel); pulled += 1
+                        self.base_host[rel] = h; self.base_local[rel] = _sig(self.local / rel)
+                elif l and not h:
+                    if self.base_host.get(rel) is not None:
+                        p = self.local / rel
+                        try:
+                            p.unlink()
+                        except OSError:
+                            pass
+                        deleted += 1
+                        self.base_host.pop(rel, None); self.base_local.pop(rel, None)
+                    else:
+                        meta = await self._push(rel); pushed += 1
+                        self.base_host[rel] = (int(meta.get("mtime", 0)), int(meta.get("size", 0)))
+                        self.base_local[rel] = l
                 else:
-                    await self._pull(rel); pulled += 1
-                    self.base_host[rel] = h; self.base_local[rel] = _sig(self.local / rel)
-            elif l and not h:
-                if self.base_host.get(rel) is not None:
-                    p = self.local / rel
-                    try:
-                        p.unlink()
-                    except OSError:
-                        pass
-                    deleted += 1
                     self.base_host.pop(rel, None); self.base_local.pop(rel, None)
-                else:
-                    meta = await self._push(rel); pushed += 1
-                    self.base_host[rel] = (int(meta.get("mtime", 0)), int(meta.get("size", 0)))
-                    self.base_local[rel] = l
-            else:
-                self.base_host.pop(rel, None); self.base_local.pop(rel, None)
+            except Exception as e:
+                errors.append(f"{rel}: {e}")
         if pulled or pushed or deleted:
             await self._emit(f"synced (+{pulled} ↓ {pushed} ↑ {deleted} ✕)")
+        if errors:
+            self._last_error = errors[0]
+            await self._emit(f"{len(errors)} file(s) failed — {errors[0]}")
+        else:
+            self._last_error = None
 
 
 def mount_fuse(base_url, share, pin, mountpoint, log=None):

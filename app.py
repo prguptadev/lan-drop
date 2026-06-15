@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import termios
+import time
 import urllib.parse
 import uuid
 import zipfile
@@ -71,8 +72,25 @@ class App:
         self.terminal_pin = cfg.get("terminal_pin") or None
         self.shares = self._load_json(SHARES_FILE, {})            # host side: shareId -> {name, root}
         self.workspaces = self._load_json(WORKSPACES_FILE, {})    # client side: wsId -> {...}
+        self._dedup_workspaces()
         self.sync_sessions = {}   # wsId -> SyncSession
         self.fuse_stops = {}      # wsId -> stop callable
+        self.share_activity = {}  # shareId -> {"last": ts, "reads": n, "writes": n}
+
+    def _dedup_workspaces(self):
+        seen = {}
+        for wid in list(self.workspaces.keys()):
+            key = self.workspaces[wid].get("local")
+            if key in seen:
+                del self.workspaces[wid]
+            else:
+                seen[key] = wid
+        self._save_workspaces()
+
+    def _touch_share(self, sid, kind):
+        a = self.share_activity.setdefault(sid, {"last": 0, "reads": 0, "writes": 0})
+        a["last"] = time.time()
+        a[kind] = a.get(kind, 0) + 1
 
     @staticmethod
     def _load_json(path, default):
@@ -213,6 +231,8 @@ class App:
                 await self.broadcast_peers()
             if self.sync_sessions or self.fuse_stops:
                 await self._broadcast_workspaces()
+            if self.shares:
+                await self._broadcast_shares()
             for peer in came_online:
                 await self._flush(peer)
 
@@ -756,17 +776,18 @@ class App:
         root = self._share_root(request.query.get("share"))
         if not root or not root.is_dir():
             return web.Response(status=404)
+        self._touch_share(request.query.get("share"), "reads")
         files = {}
         for p in root.rglob("*"):
             if p.is_file():
                 rel = p.relative_to(root).as_posix()
-                if remotefs.is_ignored(rel):
-                    continue
                 try:
                     st = p.stat()
-                    files[rel] = [int(st.st_mtime), st.st_size]
                 except OSError:
-                    pass
+                    continue
+                if remotefs.is_ignored(rel, st.st_size):
+                    continue
+                files[rel] = [int(st.st_mtime), st.st_size]
         return web.json_response({"files": files})
 
     async def fs_list(self, request):
@@ -803,6 +824,7 @@ class App:
         target = self._resolve(root, request.query.get("path", "")) if root else None
         if not target or not target.is_file():
             return web.Response(status=404)
+        self._touch_share(request.query.get("share"), "reads")
         return web.FileResponse(target)
 
     async def fs_write(self, request):
@@ -816,6 +838,7 @@ class App:
         with open(target, "wb") as f:
             async for chunk in request.content.iter_chunked(1024 * 256):
                 f.write(chunk)
+        self._touch_share(request.query.get("share"), "writes")
         st = target.stat()
         return web.json_response({"mtime": int(st.st_mtime), "size": st.st_size})
 
@@ -846,8 +869,14 @@ class App:
 
     # ---------- workspaces (client side) ----------
     async def _broadcast_shares(self):
-        await self._broadcast({"type": "myshares",
-                               "shares": [{"id": k, "name": v["name"], "root": v["root"]} for k, v in self.shares.items()]})
+        now = time.time()
+        shares = []
+        for k, v in self.shares.items():
+            a = self.share_activity.get(k, {})
+            shares.append({"id": k, "name": v["name"], "root": v["root"],
+                           "active": bool(a.get("last") and now - a["last"] < 15),
+                           "writes": a.get("writes", 0), "reads": a.get("reads", 0)})
+        await self._broadcast({"type": "myshares", "shares": shares})
 
     async def _broadcast_workspaces(self):
         out = []
@@ -883,6 +912,10 @@ class App:
         share_id = data.get("shareId")
         wsid = uuid.uuid4().hex[:8]
         local = WS_ROOT / name
+        # replace any existing workspace for the same local folder (no duplicates)
+        for wid, w in list(self.workspaces.items()):
+            if w.get("local") == str(local):
+                await self._close_project(wid)
         base = f"http://{peer['ip']}:{peer['port']}"
         try:
             if mode == "fuse":

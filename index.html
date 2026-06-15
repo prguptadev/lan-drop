@@ -51,6 +51,18 @@
   .main { flex: 1; display: flex; flex-direction: column; position: relative; min-width: 0; }
   .conn { display: none; background: #c98a25; color: #fff; font-size: 12px; text-align: center; padding: 5px; }
   .conn.show { display: block; }
+  .syncbar { display: none; padding: 7px 14px; font-size: 12px; border-bottom: 1px solid var(--border); background: var(--panel); gap: 8px; align-items: center; cursor: pointer; user-select: none; }
+  .syncbar.show { display: flex; }
+  .syncbar .d { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .syncbar .si { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .syncbar .caret { opacity: .6; font-size: 11px; }
+  .syncdrop { display: none; border-bottom: 1px solid var(--border); background: var(--panel); max-height: 240px; overflow-y: auto; }
+  .syncdrop.show { display: block; }
+  .syncdrop .item { display: flex; align-items: center; gap: 10px; padding: 8px 14px; font-size: 13px; }
+  .syncdrop .item .d { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .syncdrop .item .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .syncdrop .item .x { cursor: pointer; opacity: .6; }
+  .syncdrop .item .x:hover { opacity: 1; }
   .droplay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
     background: rgba(91,141,239,.18); border: 3px dashed var(--accent); margin: 8px; border-radius: 14px;
     font-size: 18px; font-weight: 600; color: var(--accent); pointer-events: none; z-index: 5; }
@@ -177,6 +189,8 @@
       <span class="hbtn" id="termBtn" style="display:none">Terminal</span>
       <span class="hbtn" id="clearBtn" style="display:none">Clear chat</span>
     </div>
+    <div class="syncbar" id="syncbar"></div>
+    <div class="syncdrop" id="syncdrop"></div>
     <div class="msgs" id="msgs"><div class="placeholder">Pick a device or group on the left.</div></div>
     <div class="droplay" id="droplay">Drop file to send</div>
     <div class="composer" id="composer" style="display:none">
@@ -264,8 +278,8 @@ function handleMsg(ev) {
   else if (m.type === "scandone") toast(`Scan complete — found ${m.found} device(s)`);
   else if (m.type === "clip") toast(`Clipboard from ${m.from} — ready to paste (⌘V)`);
   else if (m.type === "toast") toast(m.text);
-  else if (m.type === "myshares") { myShares = m.shares || []; if (devModalOpen()) showDevModal(); }
-  else if (m.type === "workspaces") { workspaces = m.workspaces || []; if (devModalOpen()) showDevModal(); }
+  else if (m.type === "myshares") { myShares = m.shares || []; renderSyncBar(); if (devModalOpen()) showDevModal(); }
+  else if (m.type === "workspaces") { workspaces = m.workspaces || []; renderSyncBar(); if (devModalOpen()) showDevModal(); }
   else if (m.type === "peershares") {
     if (m.error === "pin") { savePin(peers[m.peerId] && peers[m.peerId].ip, ""); toast("Wrong PIN for that device"); }
     else if (m.error) toast("Couldn't reach that device");
@@ -435,6 +449,59 @@ function showDevModal() {
   $("modal").querySelectorAll("[data-close]").forEach(x => x.onclick = () => wsSend({ action: "closeproject", id: x.getAttribute("data-close") }));
 }
 $("devBtn").onclick = showDevModal;
+
+function statusColor(st) {
+  if (/paused|error|stopped|refused/i.test(st)) return "#e0533a";
+  if (/connect|pull|start|mount/i.test(st)) return "#c98a25";
+  return "#46c46a";
+}
+function uniqWorkspaces() {
+  const seen = {}, out = [];
+  workspaces.forEach(w => { const k = w.local || w.name; if (seen[k]) return; seen[k] = 1; out.push(w); });
+  return out;
+}
+function renderSyncBar() {
+  const ws = uniqWorkspaces();
+  const bar = $("syncbar"), drop = $("syncdrop");
+  const items = [];
+  ws.forEach(w => items.push({ kind: "ws", id: w.id, color: statusColor(w.status || ""), name: w.name, status: w.status || "" }));
+  myShares.forEach(s => items.push({ kind: "share", color: s.active ? "#46c46a" : "#6b6b76", name: s.name, status: s.active ? `syncing now${s.writes ? ` · ${s.writes}↑` : ""}` : "shared" }));
+  if (!items.length) { bar.classList.remove("show"); drop.classList.remove("show"); bar.innerHTML = ""; drop.innerHTML = ""; return; }
+
+  // compact summary
+  let summary;
+  if (items.length === 1) summary = `${items[0].name}: ${items[0].status}`;
+  else {
+    const bits = [];
+    if (ws.length) bits.push(`${ws.length} project${ws.length > 1 ? "s" : ""}`);
+    const busy = ws.filter(w => /connect|pull/i.test(w.status || "")).length;
+    const bad = ws.filter(w => /paused|error|stopped/i.test(w.status || "")).length;
+    const ok = ws.filter(w => /synced|mounted/i.test(w.status || "")).length;
+    if (ok) bits.push(`${ok} synced`);
+    if (busy) bits.push(`${busy} syncing`);
+    if (bad) bits.push(`${bad} paused`);
+    if (myShares.length) bits.push(`sharing ${myShares.length}`);
+    summary = bits.join(" · ");
+  }
+  const worst = items.some(i => i.color === "#e0533a") ? "#e0533a" : items.some(i => i.color === "#c98a25") ? "#c98a25" : "#46c46a";
+  bar.innerHTML = "";
+  const dot = document.createElement("span"); dot.className = "d"; dot.style.background = worst;
+  const txt = document.createElement("span"); txt.className = "si"; txt.textContent = summary;
+  const caret = document.createElement("span"); caret.className = "caret"; caret.textContent = "▾";
+  bar.append(dot, txt, caret);
+  bar.classList.add("show");
+
+  drop.innerHTML = "";
+  items.forEach(it => {
+    const row = document.createElement("div"); row.className = "item";
+    const d = document.createElement("span"); d.className = "d"; d.style.background = it.color;
+    const t = document.createElement("span"); t.className = "t"; t.textContent = `${it.kind === "share" ? "Sharing " : ""}${it.name} — ${it.status}`;
+    row.append(d, t);
+    if (it.kind === "ws") { const x = document.createElement("span"); x.className = "x"; x.textContent = "✕"; x.title = "Stop"; x.onclick = e => { e.stopPropagation(); wsSend({ action: "closeproject", id: it.id }); }; row.append(x); }
+    drop.appendChild(row);
+  });
+}
+$("syncbar").onclick = () => $("syncdrop").classList.toggle("show");
 
 function openProjectFlow(peerId) {
   const p = peers[peerId]; if (!p) return;
