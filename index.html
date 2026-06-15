@@ -23,6 +23,11 @@
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; }
   .peer .pname { font-size: 14px; }
   .empty { padding: 16px; color: var(--muted); font-size: 13px; }
+  .addpeer { padding: 12px 14px; border-top: 1px solid #00000040; }
+  .addpeer-title { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+  .addpeer-row { display: flex; gap: 6px; }
+  .addpeer-row input { flex: 1; min-width: 0; background: var(--panel2); border: none; color: var(--text); padding: 8px 10px; border-radius: 8px; font-size: 13px; outline: none; }
+  .addpeer-row .btn { padding: 8px 12px; font-size: 13px; }
   .main { flex: 1; display: flex; flex-direction: column; position: relative; }
   .droplay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
     background: rgba(91,141,239,.18); border: 3px dashed var(--accent); margin: 8px; border-radius: 14px;
@@ -57,6 +62,13 @@
     </div>
     <div class="peers-title">Devices nearby</div>
     <div class="peers" id="peers"><div class="empty">Searching…</div></div>
+    <div class="addpeer">
+      <div class="addpeer-title">Not showing up? Add by IP</div>
+      <div class="addpeer-row">
+        <input type="text" id="ipInput" placeholder="e.g. 192.168.1.42" autocomplete="off" />
+        <button class="btn" id="addBtn">Add</button>
+      </div>
+    </div>
   </div>
 
   <div class="main">
@@ -178,6 +190,16 @@ function sendText() {
 
 $("sendBtn").onclick = sendText;
 $("text").addEventListener("keydown", e => { if (e.key === "Enter") sendText(); });
+
+function addByIp() {
+  const ip = $("ipInput").value.trim();
+  if (!ip) return;
+  ws.send(JSON.stringify({ action: "addpeer", ip, port: 8765 }));
+  $("ipInput").value = "";
+  toast(`Connecting to ${ip}…`);
+}
+$("addBtn").onclick = addByIp;
+$("ipInput").addEventListener("keydown", e => { if (e.key === "Enter") addByIp(); });
 $("attachBtn").onclick = () => $("fileInput").click();
 $("fileInput").onchange = () => {
   [...$("fileInput").files].forEach(f => sendFile(f, active));

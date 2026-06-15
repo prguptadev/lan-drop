@@ -125,6 +125,9 @@ class App:
 
     async def _on_browser_msg(self, data):
         action = data.get("action")
+        if action == "addpeer":
+            await self._add_peer_by_ip(data.get("ip"), int(data.get("port") or self.port))
+            return
         peer = self.peers.get(data.get("to"))
         if not peer:
             return
@@ -143,7 +146,37 @@ class App:
                 "name": meta["name"], "size": meta["size"], "url": url,
             })
 
+    async def _add_peer_by_ip(self, ip, port):
+        ip = (ip or "").strip()
+        if not ip:
+            return
+        url = f"http://{ip}:{port}/whoami"
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=5)) as s:
+                async with s.get(url) as r:
+                    info = await r.json()
+        except Exception as e:
+            await self._broadcast({"type": "error", "text": f"Can't reach {ip}:{port} — {e}"})
+            return
+        pid = info.get("id")
+        if not pid:
+            return
+        if pid == self.id:
+            await self._broadcast({"type": "error", "text": "That IP is this same Mac."})
+            return
+        self.peers[pid] = {
+            "id": pid, "name": info.get("name", ip),
+            "ip": ip, "port": port, "_sname": f"manual:{ip}",
+        }
+        await self.broadcast_peers()
+        # tell the other side who we are so it adds us back (bidirectional)
+        await self._post_peer(self.peers[pid], {"type": "hello", "from": self.name, "fromId": self.id})
+
+    async def whoami(self, request):
+        return web.json_response({"id": self.id, "name": self.name})
+
     async def _post_peer(self, peer, payload):
+        payload = {**payload, "fromIp": self.ip, "fromPort": self.port}
         url = f"http://{peer['ip']}:{peer['port']}/peer/message"
         try:
             async with ClientSession(timeout=ClientTimeout(total=10)) as s:
@@ -153,6 +186,17 @@ class App:
 
     async def peer_message(self, request):
         data = await request.json()
+        # auto-learn the sender as a peer so replies work both ways
+        fid = data.get("fromId")
+        if fid and fid != self.id and data.get("fromIp") and fid not in self.peers:
+            self.peers[fid] = {
+                "id": fid, "name": data.get("from", "Unknown"),
+                "ip": data["fromIp"], "port": int(data.get("fromPort") or self.port),
+                "_sname": f"manual:{data['fromIp']}",
+            }
+            await self.broadcast_peers()
+        if data.get("type") == "hello":
+            return web.json_response({"ok": True})  # handshake only, don't show in chat
         await self._broadcast(data)
         return web.json_response({"ok": True})
 
@@ -188,6 +232,7 @@ async def serve(name, port, announce=True):
     web_app = web.Application(client_max_size=0)  # 0 = unlimited upload size
     web_app.add_routes([
         web.get("/", app_obj.index),
+        web.get("/whoami", app_obj.whoami),
         web.get("/ws", app_obj.ws_handler),
         web.post("/peer/message", app_obj.peer_message),
         web.post("/upload", app_obj.upload),
