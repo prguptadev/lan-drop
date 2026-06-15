@@ -2,3 +2,4 @@ aiohttp>=3.9
 zeroconf>=0.131
 rumps>=0.4
 qrcode>=7.4
+watchdog>=3.0

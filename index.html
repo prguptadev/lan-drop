@@ -94,6 +94,21 @@
   .sr-snip { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   audio { height: 36px; max-width: 240px; }
   .meta { font-size: 10px; color: var(--muted); margin: 3px 6px 0; display: flex; gap: 6px; }
+  .quote { font-size: 12px; color: var(--muted); border-left: 3px solid var(--accent); padding: 2px 8px; margin-bottom: 3px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .reacts { display: flex; gap: 4px; margin: 3px 4px 0; }
+  .react { background: var(--panel2); border-radius: 10px; padding: 1px 7px; font-size: 12px; }
+  .msgacts { position: absolute; top: -12px; display: none; gap: 2px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 2px 4px; box-shadow: 0 2px 8px #00000033; z-index: 3; }
+  .row.me .msgacts { right: 4px; }
+  .row.them .msgacts { left: 4px; }
+  .row:hover .msgacts { display: flex; }
+  .msgacts span { cursor: pointer; padding: 2px 5px; font-size: 13px; border-radius: 5px; }
+  .msgacts span:hover { background: var(--hover); }
+  .reactpicker { position: fixed; display: flex; gap: 2px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 4px 6px; box-shadow: 0 4px 14px #00000044; z-index: 60; }
+  .reactpicker span { cursor: pointer; font-size: 18px; padding: 2px 4px; border-radius: 6px; }
+  .reactpicker span:hover { background: var(--hover); }
+  .replybar { padding: 8px 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px; background: var(--panel); }
+  .replybar .rt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .replybar .rx { cursor: pointer; opacity: .7; }
   .thumb { max-width: 240px; max-height: 240px; border-radius: 12px; display: block; cursor: pointer; }
   .filecard { display: flex; align-items: center; gap: 10px; min-width: 200px; max-width: 280px; }
   .fileicon { width: 38px; height: 38px; border-radius: 9px; background: var(--hover); display: flex; align-items: center; justify-content: center; font-size: 19px; flex: none; }
@@ -120,6 +135,17 @@
   .filedl .ic { width: 18px; height: 18px; }
   .btn:disabled { opacity: .5; cursor: default; }
   .placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+  .xferpanel { position: fixed; bottom: 16px; right: 16px; width: 300px; display: none; flex-direction: column; gap: 8px; z-index: 45; }
+  .xferpanel.show { display: flex; }
+  .xfer { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; box-shadow: 0 6px 18px #00000033; }
+  .xfer-top { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .xfer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .xfer-x { cursor: pointer; opacity: .6; font-size: 12px; }
+  .xfer-x:hover { opacity: 1; }
+  .xfer-bar { height: 4px; background: var(--panel2); border-radius: 2px; margin-top: 7px; overflow: hidden; }
+  .xfer-bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+  .xfer.done .xfer-bar > i { background: var(--on); }
+  .xfer.failed .xfer-bar > i, .xfer.canceled .xfer-bar > i { background: #e0533a; }
   .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #3a3a44; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .3s; z-index: 50; pointer-events: none; }
   .toast.show { opacity: 1; }
   .overlay { position: fixed; inset: 0; background: #00000088; display: none; align-items: center; justify-content: center; z-index: 40; }
@@ -193,6 +219,7 @@
     <div class="syncdrop" id="syncdrop"></div>
     <div class="msgs" id="msgs"><div class="placeholder">Pick a device or group on the left.</div></div>
     <div class="droplay" id="droplay">Drop file to send</div>
+    <div class="replybar" id="replybar" style="display:none"></div>
     <div class="composer" id="composer" style="display:none">
       <input type="file" id="fileInput" multiple style="display:none" />
       <input type="file" id="folderInput" webkitdirectory multiple style="display:none" />
@@ -205,6 +232,7 @@
     </div>
   </div>
 
+  <div class="xferpanel" id="xferpanel"></div>
   <div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
   <div class="overlay" id="termOverlay">
     <div class="termbox">
@@ -272,7 +300,8 @@ function handleMsg(ev) {
     if (myName && myName !== m.name) wsSend({ action: "setname", name: myName });
   }
   else if (m.type === "peers") { renderPeers(m.peers); renderGroups(); }
-  else if (m.type === "chat") incoming(m.fromId, { id: m.msgId, mine: false, kind: "text", text: m.text, ts: Date.now(), fromId: m.fromId });
+  else if (m.type === "chat") incoming(m.fromId, { id: m.msgId, mine: false, kind: "text", text: m.text, ts: Date.now(), fromId: m.fromId, replyTo: m.replyTo });
+  else if (m.type === "reaction") applyReaction(m.msgId, m.emoji);
   else if (m.type === "file") incoming(m.fromId, { id: m.msgId, mine: false, kind: "file", name: m.name, size: m.size, url: m.url, isImage: isImg(m.name), ts: Date.now(), fromId: m.fromId });
   else if (m.type === "status") updateStatus(m.msgId, m.state);
   else if (m.type === "scandone") toast(`Scan complete — found ${m.found} device(s)`);
@@ -624,6 +653,11 @@ function renderMsgs() {
     if (!grouped && !m.mine && activeType === "group" && m.fromName) {
       const s = document.createElement("div"); s.className = "sender"; s.textContent = m.fromName; row.appendChild(s);
     }
+    if (m.replyTo) {
+      const q = document.createElement("div"); q.className = "quote";
+      q.textContent = (m.replyTo.from ? m.replyTo.from + ": " : "") + (m.replyTo.text || "");
+      row.appendChild(q);
+    }
     const b = document.createElement("div"); b.className = "bubble";
     if (m.kind === "text") renderRichText(b, m.text);
     else if (m.isImage && settings.preview && (m.previewUrl || m.url)) {
@@ -638,6 +672,15 @@ function renderMsgs() {
     const t = document.createElement("span"); t.textContent = fmtTime(m.ts); meta.appendChild(t);
     if (m.mine && activeType === "peer") { const tk = document.createElement("span"); tk.textContent = tickFor(m.status); meta.appendChild(tk); }
     row.appendChild(meta);
+    if (m.reactions && Object.keys(m.reactions).length) {
+      const rc = document.createElement("div"); rc.className = "reacts";
+      Object.entries(m.reactions).forEach(([em, c]) => { const s = document.createElement("span"); s.className = "react"; s.textContent = c > 1 ? `${em} ${c}` : em; rc.appendChild(s); });
+      row.appendChild(rc);
+    }
+    const acts = document.createElement("div"); acts.className = "msgacts";
+    const rb = document.createElement("span"); rb.textContent = "↩"; rb.title = "Reply"; rb.onclick = ev => { ev.stopPropagation(); setReply(m); };
+    const eb = document.createElement("span"); eb.textContent = "☺"; eb.title = "React"; eb.onclick = ev => openReactPicker(ev, m);
+    acts.append(rb, eb); row.appendChild(acts);
     el.appendChild(row);
     prevSender = senderKey; prevTs = m.ts || 0;
   });
@@ -663,18 +706,59 @@ function incoming(fromId, msg) {
   notify(who, msg.kind === "file" ? `File: ${msg.name}` : msg.text);
 }
 
+let replyTarget = null;
+function setReply(m) {
+  replyTarget = { id: m.id, text: m.kind === "text" ? m.text : m.name, from: m.mine ? "You" : (m.fromName || displayName(peers[m.fromId]) || "") };
+  const bar = $("replybar"); bar.style.display = "flex";
+  bar.innerHTML = "";
+  const t = document.createElement("span"); t.className = "rt"; t.textContent = `Replying to ${replyTarget.from}: ${replyTarget.text}`;
+  const x = document.createElement("span"); x.className = "rx"; x.textContent = "✕"; x.onclick = clearReply;
+  bar.append(t, x); $("text").focus();
+}
+function clearReply() { replyTarget = null; $("replybar").style.display = "none"; }
+
+function findMsg(id) {
+  for (const k in convos) { const m = (convos[k] || []).find(x => x.id === id); if (m) return { m, key: k }; }
+  return null;
+}
+function applyReaction(id, emoji) {
+  const f = findMsg(id); if (!f) return;
+  (f.m.reactions ||= {}); f.m.reactions[emoji] = (f.m.reactions[emoji] || 0) + 1;
+  save(); if (active) renderMsgs();
+}
+function react(m, emoji) {
+  (m.reactions ||= {}); m.reactions[emoji] = (m.reactions[emoji] || 0) + 1;
+  save(); if (active) renderMsgs();
+  const targets = activeMembers();
+  if (targets.length) wsSend({ action: "react", toList: targets, msgId: m.id, emoji });
+}
+const REACT_EMOJIS = ["👍", "❤️", "😂", "🎉", "✅", "👀"];
+function closeReactPicker() { const p = $("reactpicker"); if (p) p.remove(); }
+function openReactPicker(ev, m) {
+  ev.stopPropagation(); closeReactPicker();
+  const menu = document.createElement("div"); menu.className = "reactpicker"; menu.id = "reactpicker";
+  REACT_EMOJIS.forEach(em => { const b = document.createElement("span"); b.textContent = em; b.onclick = () => { react(m, em); closeReactPicker(); }; menu.appendChild(b); });
+  document.body.appendChild(menu);
+  const r = ev.target.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(r.left - 60, window.innerWidth - 200)) + "px";
+  menu.style.top = Math.max(8, r.top - 44) + "px";
+}
+document.addEventListener("click", closeReactPicker);
+
 function sendText() {
   const t = $("text").value.trim();
   if (!t || !active) return;
   const targets = activeMembers();
   if (!targets.length) { toast("No reachable devices in this view"); return; }
   const entry = { id: rid(), mine: true, kind: "text", text: t, ts: Date.now(), status: "sending" };
+  if (replyTarget) entry.replyTo = { ...replyTarget };
   (convos[active] ||= []).push(entry);
   targets.forEach(pid => {
     const mid = targets.length === 1 ? entry.id : rid();
     msgIndex[mid] = { key: active, entry };
-    wsSend({ action: "chat", to: pid, text: t, msgId: mid });
+    wsSend({ action: "chat", to: pid, text: t, msgId: mid, replyTo: entry.replyTo });
   });
+  clearReply();
   save(); $("text").value = ""; renderMsgs();
 }
 
@@ -688,19 +772,22 @@ function sendFileToActive(file) {
   (convos[active] ||= []).push(entry); renderMsgs();
   const fd = new FormData(); fd.append("file", file);
   const xhr = new XMLHttpRequest(); xhr.open("POST", "/upload");
-  xhr.upload.onprogress = e => { if (e.lengthComputable) { entry.prog = Math.round(e.loaded / e.total * 100); if (active) renderMsgs(); } };
+  const tr = addTransfer(file.name, xhr);
+  xhr.upload.onprogress = e => { if (e.lengthComputable) { entry.prog = Math.round(e.loaded / e.total * 100); tr.pct = entry.prog; renderTransfers(); if (active) renderMsgs(); } };
   xhr.onload = () => {
     if (xhr.status === 200) {
       const r = JSON.parse(xhr.responseText); entry.prog = null;
+      tr.status = "done"; tr.done = Date.now();
       targets.forEach(pid => {
         const mid = targets.length === 1 ? entry.id : rid();
         msgIndex[mid] = { key: active, entry };
         wsSend({ action: "file", to: pid, fileId: r.id, msgId: mid });
       });
-    } else { entry.status = "failed"; toast("Upload failed"); }
-    save(); if (active) renderMsgs();
+    } else { entry.status = "failed"; tr.status = "failed"; tr.done = Date.now(); toast("Upload failed"); }
+    renderTransfers(); save(); if (active) renderMsgs();
   };
-  xhr.onerror = () => { entry.status = "failed"; if (active) renderMsgs(); };
+  xhr.onerror = () => { entry.status = "failed"; tr.status = "failed"; tr.done = Date.now(); renderTransfers(); if (active) renderMsgs(); };
+  xhr.onabort = () => { entry.status = "failed"; entry.name = file.name + " (canceled)"; if (active) renderMsgs(); };
   xhr.send(fd);
 }
 
@@ -756,15 +843,17 @@ $("folderInput").onchange = () => {
   fd.append("folderName", folderName);
   files.forEach(f => fd.append("f", f, f.webkitRelativePath || f.name));
   const xhr = new XMLHttpRequest(); xhr.open("POST", "/uploadfolder");
-  xhr.upload.onprogress = e => { if (e.lengthComputable) { entry.prog = Math.round(e.loaded / e.total * 100); if (active) renderMsgs(); } };
+  const tr = addTransfer(folderName + ".zip", xhr);
+  xhr.upload.onprogress = e => { if (e.lengthComputable) { entry.prog = Math.round(e.loaded / e.total * 100); tr.pct = entry.prog; renderTransfers(); if (active) renderMsgs(); } };
   xhr.onload = () => {
     if (xhr.status === 200) {
       const r = JSON.parse(xhr.responseText); entry.prog = null; entry.name = r.name; entry.size = r.size;
+      tr.status = "done"; tr.done = Date.now();
       targets.forEach(pid => { const mid = targets.length === 1 ? entry.id : rid(); msgIndex[mid] = { key: active, entry }; wsSend({ action: "file", to: pid, fileId: r.id, msgId: mid }); });
-    } else { entry.status = "failed"; toast("Folder send failed"); }
-    save(); if (active) renderMsgs();
+    } else { entry.status = "failed"; tr.status = "failed"; tr.done = Date.now(); toast("Folder send failed"); }
+    renderTransfers(); save(); if (active) renderMsgs();
   };
-  xhr.onerror = () => { entry.status = "failed"; if (active) renderMsgs(); };
+  xhr.onerror = () => { entry.status = "failed"; tr.status = "failed"; tr.done = Date.now(); renderTransfers(); if (active) renderMsgs(); };
   xhr.send(fd);
 };
 
@@ -923,6 +1012,39 @@ function humanSize(n) {
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return n.toFixed(i ? 1 : 0) + " " + u[i];
 }
+/* ---------- transfer panel ---------- */
+const transfers = [];
+function addTransfer(name, xhr) {
+  const tr = { id: rid(), name, pct: 0, status: "uploading", xhr, done: 0 };
+  transfers.unshift(tr);
+  renderTransfers();
+  return tr;
+}
+function renderTransfers() {
+  const now = Date.now();
+  const show = transfers.filter(t => t.status === "uploading" || (t.done && now - t.done < 4000));
+  const panel = $("xferpanel");
+  panel.innerHTML = "";
+  if (!show.length) { panel.classList.remove("show"); return; }
+  show.forEach(t => {
+    const el = document.createElement("div"); el.className = "xfer " + t.status;
+    const top = document.createElement("div"); top.className = "xfer-top";
+    const nm = document.createElement("span"); nm.className = "xfer-name"; nm.textContent = t.name;
+    const st = document.createElement("span"); st.textContent = t.status === "uploading" ? `${t.pct}%` : t.status === "done" ? "✓" : t.status === "canceled" ? "canceled" : "failed";
+    top.append(nm, st);
+    if (t.status === "uploading") {
+      const x = document.createElement("span"); x.className = "xfer-x"; x.textContent = "✕"; x.title = "Cancel";
+      x.onclick = () => { try { t.xhr.abort(); } catch (e) {} t.status = "canceled"; t.done = Date.now(); renderTransfers(); };
+      top.append(x);
+    }
+    const bar = document.createElement("div"); bar.className = "xfer-bar";
+    const i = document.createElement("i"); i.style.width = (t.status === "uploading" ? t.pct : 100) + "%"; bar.append(i);
+    el.append(top, bar); panel.append(el);
+  });
+  panel.classList.add("show");
+  setTimeout(renderTransfers, 4100);
+}
+
 let toastTimer;
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");

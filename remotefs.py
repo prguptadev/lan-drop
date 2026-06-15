@@ -73,7 +73,7 @@ class SyncSession:
     baseline. Conflicts (both changed) resolve host-wins and are logged.
     """
 
-    INTERVAL = 2.0
+    IDLE_POLL = 3.0   # how often to cheaply check the host for remote changes
 
     def __init__(self, base_url, share, pin, local_dir, log=None):
         self.base = base_url.rstrip("/")
@@ -89,6 +89,12 @@ class SyncSession:
         self.status = "starting"
         self.files = 0
         self._last_error = None
+        self._loop = None
+        self._wake = None          # asyncio.Event, set on local file change
+        self._local_dirty = True
+        self._observer = None
+        self._last_version = None
+        self._versionless = False  # host doesn't support /fs/version → always cycle
 
     # ---- lifecycle ----
     async def start(self):
@@ -101,6 +107,9 @@ class SyncSession:
             self._task.cancel()
 
     async def _run(self):
+        self._loop = asyncio.get_event_loop()
+        self._wake = asyncio.Event()
+        self._start_watch()
         try:
             while not self._stop:
                 try:
@@ -108,8 +117,18 @@ class SyncSession:
                         self.status = "connecting…"
                         await self._initial()
                         self._initialized = True
-                    await self._cycle()
-                    self.files = len(self.base_host)
+                        self._last_version = await self._get_version()
+                        self.files = len(self.base_host)
+                    else:
+                        need = self._local_dirty
+                        self._local_dirty = False
+                        ver = await self._get_version()
+                        if self._versionless or ver != self._last_version:
+                            need = True
+                            self._last_version = ver
+                        if need:
+                            await self._cycle()
+                            self.files = len(self.base_host)
                     self.status = (f"error: {self._last_error}" if self._last_error
                                    else f"synced · {self.files} files")
                 except asyncio.CancelledError:
@@ -117,9 +136,63 @@ class SyncSession:
                 except Exception as e:
                     self.status = f"paused: {e}"
                     await self._emit(f"sync paused — {e}")
-                await asyncio.sleep(self.INTERVAL)
+                # wake immediately on a local change, else poll cheaply
+                try:
+                    await asyncio.wait_for(self._wake.wait(), timeout=self.IDLE_POLL)
+                except asyncio.TimeoutError:
+                    pass
+                self._wake.clear()
         except asyncio.CancelledError:
             pass
+        finally:
+            self._stop_watch()
+
+    # ---- local filesystem watch (instant push) ----
+    def _start_watch(self):
+        try:
+            from watchdog.observers import Observer
+            from watchdog.events import FileSystemEventHandler
+        except Exception:
+            return
+        sess = self
+
+        class _H(FileSystemEventHandler):
+            def on_any_event(self, event):
+                sess._local_dirty = True
+                if sess._loop and sess._wake:
+                    sess._loop.call_soon_threadsafe(sess._wake.set)
+
+        try:
+            self.local.mkdir(parents=True, exist_ok=True)
+            self._observer = Observer()
+            self._observer.schedule(_H(), str(self.local), recursive=True)
+            self._observer.start()
+        except Exception:
+            self._observer = None
+
+    def _stop_watch(self):
+        if self._observer:
+            try:
+                self._observer.stop()
+                self._observer.join(timeout=2)
+            except Exception:
+                pass
+            self._observer = None
+
+    async def _get_version(self):
+        if self._versionless:
+            return None
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=8)) as s:
+                async with s.get(self._url("version")) as r:
+                    if r.status == 404:
+                        self._versionless = True
+                        return None
+                    if r.status != 200:
+                        return self._last_version
+                    return (await r.json()).get("version")
+        except Exception:
+            return self._last_version
 
     async def _emit(self, msg):
         r = self.log(msg)

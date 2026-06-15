@@ -76,6 +76,8 @@ class App:
         self.sync_sessions = {}   # wsId -> SyncSession
         self.fuse_stops = {}      # wsId -> stop callable
         self.share_activity = {}  # shareId -> {"last": ts, "reads": n, "writes": n}
+        self.share_versions = {}  # shareId -> float (bumps on any change in the shared folder)
+        self.share_observers = {} # shareId -> watchdog Observer
 
     def _dedup_workspaces(self):
         seen = {}
@@ -91,6 +93,43 @@ class App:
         a = self.share_activity.setdefault(sid, {"last": 0, "reads": 0, "writes": 0})
         a["last"] = time.time()
         a[kind] = a.get(kind, 0) + 1
+
+    def _start_share_watch(self, sid):
+        sh = self.shares.get(sid)
+        if not sh or sid in self.share_observers:
+            return
+        try:
+            from watchdog.observers import Observer
+            from watchdog.events import FileSystemEventHandler
+        except Exception:
+            return
+        self.share_versions[sid] = time.time()
+        versions = self.share_versions
+
+        class _H(FileSystemEventHandler):
+            def on_any_event(self, event):
+                versions[sid] = time.time()
+
+        try:
+            obs = Observer()
+            obs.schedule(_H(), sh["root"], recursive=True)
+            obs.start()
+            self.share_observers[sid] = obs
+        except Exception:
+            pass
+
+    def _stop_share_watch(self, sid):
+        obs = self.share_observers.pop(sid, None)
+        if obs:
+            try:
+                obs.stop()
+            except Exception:
+                pass
+        self.share_versions.pop(sid, None)
+
+    def start_share_watchers(self):
+        for sid in list(self.shares):
+            self._start_share_watch(sid)
 
     @staticmethod
     def _load_json(path, default):
@@ -359,6 +398,13 @@ class App:
                 if peer:
                     await self._send_clipboard(peer)
             return
+        if action == "react":
+            for pid in (data.get("toList") or [data.get("to")]):
+                peer = self.peers.get(pid)
+                if peer:
+                    await self._post_peer(peer, {"type": "reaction", "msgId": data.get("msgId"),
+                                                 "emoji": data.get("emoji"), "from": self.name, "fromId": self.id})
+            return
         if action == "addshare":
             path = os.path.expanduser((data.get("path") or "").strip())
             if not path or not os.path.isdir(path):
@@ -367,10 +413,12 @@ class App:
             sid = uuid.uuid4().hex[:12]
             self.shares[sid] = {"name": os.path.basename(path.rstrip("/")) or path, "root": str(Path(path).resolve())}
             self._save_shares()
+            self._start_share_watch(sid)
             await self._broadcast_shares()
             await self._broadcast({"type": "toast", "text": f"Sharing {self.shares[sid]['name']}"})
             return
         if action == "removeshare":
+            self._stop_share_watch(data.get("id"))
             self.shares.pop(data.get("id"), None)
             self._save_shares()
             await self._broadcast_shares()
@@ -394,6 +442,7 @@ class App:
         if action == "chat":
             await self._deliver_or_queue(peer, {
                 "kind": "chat", "msgId": data.get("msgId"), "text": data.get("text"),
+                "replyTo": data.get("replyTo"),
             })
         elif action == "file":
             meta = self.uploads.get(data.get("fileId"))
@@ -571,6 +620,7 @@ class App:
             return await self._post_peer(peer, {
                 "type": "chat", "from": self.name, "fromId": self.id,
                 "text": item.get("text"), "msgId": item.get("msgId"),
+                "replyTo": item.get("replyTo"),
             }, quiet=quiet)
         # file
         remote_id = await self._push_file(peer, {
@@ -627,6 +677,9 @@ class App:
             return web.json_response({"ok": True})
         if mtype == "ack":
             await self._broadcast({"type": "status", "msgId": data.get("ackId"), "state": "delivered"})
+            return web.json_response({"ok": True})
+        if mtype == "reaction":
+            await self._broadcast(data)
             return web.json_response({"ok": True})
         if mtype == "clip":
             if data.get("clipKind") == "text":
@@ -769,6 +822,14 @@ class App:
             return web.json_response({"error": "pin"}, status=403)
         return web.json_response({"shares": [{"id": k, "name": v["name"]} for k, v in self.shares.items()]})
 
+    async def fs_version(self, request):
+        if not self._fs_auth(request):
+            return web.Response(status=403)
+        sid = request.query.get("share")
+        if sid not in self.shares:
+            return web.Response(status=404)
+        return web.json_response({"version": self.share_versions.get(sid, 0)})
+
     async def fs_manifest(self, request):
         if not self._fs_auth(request):
             return web.Response(status=403)
@@ -838,7 +899,9 @@ class App:
         with open(target, "wb") as f:
             async for chunk in request.content.iter_chunked(1024 * 256):
                 f.write(chunk)
-        self._touch_share(request.query.get("share"), "writes")
+        sid = request.query.get("share")
+        self._touch_share(sid, "writes")
+        self.share_versions[sid] = time.time()
         st = target.stat()
         return web.json_response({"mtime": int(st.st_mtime), "size": st.st_size})
 
@@ -1037,6 +1100,7 @@ async def serve(name, port, announce=True):
         web.post("/fs/write", app_obj.fs_write),
         web.post("/fs/mkdir", app_obj.fs_mkdir),
         web.post("/fs/delete", app_obj.fs_delete),
+        web.get("/fs/version", app_obj.fs_version),
     ])
     vendor_dir = BASE_DIR / "vendor"
     if vendor_dir.is_dir():
@@ -1049,6 +1113,7 @@ async def serve(name, port, announce=True):
     await app_obj.reconnect_known()
     asyncio.ensure_future(app_obj.heartbeat())
     asyncio.ensure_future(app_obj.resume_workspaces())
+    app_obj.start_share_watchers()
 
     if announce:
         print(f"\n  Lan Drop  —  '{app_obj.name}'")
