@@ -13,7 +13,10 @@
   body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; }
   .sidebar { width: 260px; background: var(--panel); border-right: 1px solid #00000040; display: flex; flex-direction: column; }
   .me { padding: 16px; border-bottom: 1px solid #00000040; }
+  .me .name-row { display: flex; align-items: center; gap: 8px; }
   .me .name { font-weight: 600; font-size: 15px; }
+  .me .act { opacity: .5; cursor: pointer; font-size: 12px; }
+  .me .act:hover { opacity: 1; }
   .me .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .peers-title { padding: 12px 16px 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
   .peers { flex: 1; overflow-y: auto; }
@@ -60,7 +63,10 @@
 <body>
   <div class="sidebar">
     <div class="me">
-      <div class="name" id="myName">…</div>
+      <div class="name-row">
+        <span class="name" id="myName">…</span>
+        <span class="act" id="editMe" title="Rename this Mac">✏️</span>
+      </div>
       <div class="sub">on this network</div>
     </div>
     <div class="peers-title">Devices nearby</div>
@@ -93,6 +99,7 @@ let peers = {};
 let active = null;
 const convos = {};   // peerId -> [ {mine, kind, ...} ]
 let aliases = {};    // ip -> custom display name
+let myName = null;   // my own custom display name
 
 const $ = id => document.getElementById(id);
 
@@ -100,6 +107,7 @@ function save() { try { localStorage.setItem("td_convos", JSON.stringify(convos)
 function load() {
   try { Object.assign(convos, JSON.parse(localStorage.getItem("td_convos") || "{}")); } catch (e) {}
   try { aliases = JSON.parse(localStorage.getItem("td_aliases") || "{}"); } catch (e) {}
+  try { myName = localStorage.getItem("td_myname") || null; } catch (e) {}
 }
 function saveAliases() { try { localStorage.setItem("td_aliases", JSON.stringify(aliases)); } catch (e) {} }
 function displayName(p) { return (p && p.ip && aliases[p.ip]) || (p && p.name) || "Device"; }
@@ -110,7 +118,11 @@ const ws = new WebSocket(`ws://${location.host}/ws`);
 
 ws.onmessage = ev => {
   const m = JSON.parse(ev.data);
-  if (m.type === "self") { me = m; $("myName").textContent = m.name; }
+  if (m.type === "self") {
+    me = m;
+    $("myName").textContent = myName || m.name;
+    if (myName && myName !== m.name) ws.send(JSON.stringify({ action: "setname", name: myName }));
+  }
   else if (m.type === "peers") renderPeers(m.peers);
   else if (m.type === "chat") incoming(m.fromId, { mine: false, kind: "text", text: m.text });
   else if (m.type === "file") incoming(m.fromId, { mine: false, kind: "file", name: m.name, size: m.size, url: m.url });
@@ -238,6 +250,17 @@ function addByIp() {
 }
 $("addBtn").onclick = addByIp;
 $("ipInput").addEventListener("keydown", e => { if (e.key === "Enter") addByIp(); });
+
+$("editMe").onclick = () => {
+  const name = prompt("Your device name (also shown to others):", $("myName").textContent);
+  if (name == null) return;
+  const t = name.trim();
+  if (!t) return;
+  myName = t;
+  try { localStorage.setItem("td_myname", t); } catch (e) {}
+  $("myName").textContent = t;
+  ws.send(JSON.stringify({ action: "setname", name: t }));
+};
 $("attachBtn").onclick = () => $("fileInput").click();
 $("fileInput").onchange = () => {
   [...$("fileInput").files].forEach(f => sendFile(f, active));

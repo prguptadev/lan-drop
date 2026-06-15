@@ -13,6 +13,7 @@ SERVICE_TYPE = "_tridentdrop._tcp.local."
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+NAME_FILE = BASE_DIR / ".displayname"
 
 
 def get_local_ip():
@@ -29,6 +30,12 @@ def get_local_ip():
 class App:
     def __init__(self, name, port):
         self.name = name
+        try:
+            saved = NAME_FILE.read_text().strip()
+            if saved:
+                self.name = saved
+        except Exception:
+            pass
         self.port = port
         self.id = uuid.uuid4().hex[:8]
         self.ip = get_local_ip()
@@ -131,6 +138,15 @@ class App:
         if action == "removepeer":
             if self.peers.pop(data.get("to"), None):
                 await self.broadcast_peers()
+            return
+        if action == "setname":
+            nm = (data.get("name") or "").strip()
+            if nm:
+                self.name = nm
+                try:
+                    NAME_FILE.write_text(nm)
+                except Exception:
+                    pass
             return
         peer = self.peers.get(data.get("to"))
         if not peer:
