@@ -7,57 +7,79 @@
 <style>
   :root {
     --bg: #1f1f23; --panel: #2a2a30; --panel2: #33333b; --accent: #5b8def;
-    --text: #e8e8ec; --muted: #9a9aa5; --me: #3a5fb0; --them: #3a3a44; --ok: #46c46a;
+    --text: #e8e8ec; --muted: #9a9aa5; --me: #3a5fb0; --them: #3a3a44;
+    --on: #46c46a; --off: #6b6b76;
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; }
-  .sidebar { width: 260px; background: var(--panel); border-right: 1px solid #00000040; display: flex; flex-direction: column; }
-  .me { padding: 16px; border-bottom: 1px solid #00000040; }
+  .sidebar { width: 270px; background: var(--panel); border-right: 1px solid #00000040; display: flex; flex-direction: column; }
+  .me { padding: 14px 16px; border-bottom: 1px solid #00000040; }
   .me .name-row { display: flex; align-items: center; gap: 8px; }
-  .me .name { font-weight: 600; font-size: 15px; }
-  .me .act { opacity: .5; cursor: pointer; font-size: 12px; }
+  .me .name { font-weight: 600; font-size: 15px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .me .act { opacity: .6; cursor: pointer; font-size: 13px; }
   .me .act:hover { opacity: 1; }
   .me .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .peers-title { padding: 12px 16px 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
-  .peers { flex: 1; overflow-y: auto; }
-  .peer { padding: 11px 16px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+  .sec { padding: 12px 16px 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; display: flex; align-items: center; justify-content: space-between; }
+  .sec .add { cursor: pointer; color: var(--accent); font-size: 16px; }
+  .scroll { flex: 1; overflow-y: auto; }
+  .peer { padding: 10px 16px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
   .peer:hover { background: var(--panel2); }
   .peer.active { background: var(--accent); }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--on); flex: none; }
+  .dot.offline { background: var(--off); }
   .peer .pname { font-size: 14px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { background: #e0533a; color: #fff; font-size: 11px; min-width: 18px; height: 18px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; flex: none; }
   .peer .act { opacity: 0; font-size: 12px; padding: 2px 4px; border-radius: 5px; flex: none; }
   .peer:hover .act { opacity: .6; }
   .peer .act:hover { opacity: 1; background: #ffffff22; }
-  .empty { padding: 16px; color: var(--muted); font-size: 13px; }
+  .empty { padding: 14px 16px; color: var(--muted); font-size: 13px; }
   .addpeer { padding: 12px 14px; border-top: 1px solid #00000040; }
   .addpeer-title { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
   .addpeer-row { display: flex; gap: 6px; }
   .addpeer-row input { flex: 1; min-width: 0; background: var(--panel2); border: none; color: var(--text); padding: 8px 10px; border-radius: 8px; font-size: 13px; outline: none; }
   .addpeer-row .btn { padding: 8px 12px; font-size: 13px; }
+  .addpeer .scanrow { margin-top: 8px; display: flex; gap: 6px; }
+  .addpeer .ghost { flex: 1; background: var(--panel2); color: var(--text); }
   .main { flex: 1; display: flex; flex-direction: column; position: relative; }
   .droplay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
     background: rgba(91,141,239,.18); border: 3px dashed var(--accent); margin: 8px; border-radius: 14px;
     font-size: 18px; font-weight: 600; color: #cfe0ff; pointer-events: none; z-index: 5; }
   .droplay.show { display: flex; }
-  .header { padding: 14px 18px; border-bottom: 1px solid #00000040; font-weight: 600; }
+  .header { padding: 12px 18px; border-bottom: 1px solid #00000040; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  .header .htitle { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .header .hbtn { font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+  .header .hbtn:hover { background: var(--panel2); color: var(--text); }
   .msgs { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
-  .row { display: flex; }
-  .row.me { justify-content: flex-end; }
-  .bubble { max-width: 70%; padding: 9px 13px; border-radius: 14px; font-size: 14px; line-height: 1.4; word-break: break-word; }
+  .row { display: flex; flex-direction: column; max-width: 72%; }
+  .row.me { align-self: flex-end; align-items: flex-end; }
+  .row.them { align-self: flex-start; align-items: flex-start; }
+  .sender { font-size: 11px; color: var(--muted); margin: 0 6px 2px; }
+  .bubble { padding: 9px 13px; border-radius: 14px; font-size: 14px; line-height: 1.4; word-break: break-word; }
   .row.me .bubble { background: var(--me); border-bottom-right-radius: 4px; }
   .row.them .bubble { background: var(--them); border-bottom-left-radius: 4px; }
+  .meta { font-size: 10px; color: var(--muted); margin: 3px 6px 0; display: flex; gap: 6px; }
   .file { display: flex; align-items: center; gap: 10px; }
   .file a { color: #cfe0ff; font-weight: 600; text-decoration: none; }
   .file .sz { color: var(--muted); font-size: 12px; }
+  .thumb { max-width: 240px; max-height: 240px; border-radius: 10px; display: block; cursor: pointer; }
   .composer { padding: 14px; border-top: 1px solid #00000040; display: flex; gap: 10px; align-items: center; }
   .composer input[type=text] { flex: 1; background: var(--panel2); border: none; color: var(--text); padding: 11px 14px; border-radius: 10px; font-size: 14px; outline: none; }
   .btn { background: var(--accent); border: none; color: #fff; padding: 10px 16px; border-radius: 10px; cursor: pointer; font-size: 14px; }
   .btn.icon { background: var(--panel2); padding: 10px 13px; }
   .btn:disabled { opacity: .5; cursor: default; }
   .placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); }
-  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #b03a3a; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .3s; }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #3a3a44; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .3s; z-index: 50; }
   .toast.show { opacity: 1; }
-  .prog { height: 4px; background: var(--accent); border-radius: 2px; margin-top: 6px; width: 0; }
+  .overlay { position: fixed; inset: 0; background: #00000088; display: none; align-items: center; justify-content: center; z-index: 40; }
+  .overlay.show { display: flex; }
+  .modal { background: var(--panel); border-radius: 14px; padding: 20px; width: 320px; max-height: 80vh; overflow-y: auto; }
+  .modal h3 { margin: 0 0 12px; font-size: 16px; }
+  .modal input[type=text] { width: 100%; background: var(--panel2); border: none; color: var(--text); padding: 10px; border-radius: 8px; font-size: 14px; outline: none; margin-bottom: 12px; }
+  .modal .mp { display: flex; align-items: center; gap: 8px; padding: 6px 4px; font-size: 14px; }
+  .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  .modal .qrwrap { background: #fff; padding: 12px; border-radius: 10px; display: flex; justify-content: center; }
+  .modal .qrwrap img, .modal .qrwrap svg { width: 240px; height: 240px; }
+  .modal .url { text-align: center; margin-top: 10px; font-size: 13px; color: var(--accent); word-break: break-all; }
 </style>
 </head>
 <body>
@@ -65,99 +87,138 @@
     <div class="me">
       <div class="name-row">
         <span class="name" id="myName">…</span>
+        <span class="act" id="qrBtn" title="Show QR to connect">▦</span>
         <span class="act" id="editMe" title="Rename this Mac">✏️</span>
       </div>
-      <div class="sub">on this network</div>
+      <div class="sub" id="meSub">on this network</div>
     </div>
-    <div class="peers-title">Devices nearby</div>
-    <div class="peers" id="peers"><div class="empty">Searching…</div></div>
+
+    <div class="sec">Groups <span class="add" id="newGroupBtn" title="New group">＋</span></div>
+    <div id="groups"></div>
+
+    <div class="sec">Devices</div>
+    <div class="scroll" id="peers"><div class="empty">Searching…</div></div>
+
     <div class="addpeer">
-      <div class="addpeer-title">Not showing up? Add by IP</div>
+      <div class="addpeer-title">Add by IP (comma-separate for many)</div>
       <div class="addpeer-row">
-        <input type="text" id="ipInput" placeholder="e.g. 192.168.1.42" autocomplete="off" />
+        <input type="text" id="ipInput" placeholder="192.168.1.42, 192.168.1.43" autocomplete="off" />
         <button class="btn" id="addBtn">Add</button>
+      </div>
+      <div class="scanrow">
+        <button class="btn ghost" id="scanBtn">🔍 Scan network</button>
       </div>
     </div>
   </div>
 
   <div class="main">
-    <div class="header" id="header">Select a device to start</div>
-    <div class="msgs" id="msgs"><div class="placeholder">Pick a device on the left.</div></div>
+    <div class="header">
+      <span class="htitle" id="header">Select a device to start</span>
+      <span class="hbtn" id="clearBtn" style="display:none">Clear chat</span>
+    </div>
+    <div class="msgs" id="msgs"><div class="placeholder">Pick a device or group on the left.</div></div>
     <div class="droplay" id="droplay">Drop file to send</div>
     <div class="composer" id="composer" style="display:none">
-      <input type="file" id="fileInput" style="display:none" />
+      <input type="file" id="fileInput" multiple style="display:none" />
       <button class="btn icon" id="attachBtn" title="Send file">📎</button>
-      <input type="text" id="text" placeholder="Type a message…" autocomplete="off" />
+      <input type="text" id="text" placeholder="Type a message…  (paste a screenshot to send it)" autocomplete="off" />
       <button class="btn" id="sendBtn">Send</button>
     </div>
   </div>
+
+  <div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
   <div class="toast" id="toast"></div>
 
 <script>
-let me = { name: "", id: "" };
+let me = { name: "", id: "", ip: "", port: 8765 };
 let peers = {};
-let active = null;
-const convos = {};   // peerId -> [ {mine, kind, ...} ]
-let aliases = {};    // ip -> custom display name
-let myName = null;   // my own custom display name
+let groups = [];
+let active = null;          // peer id or group id
+let activeType = "peer";    // "peer" | "group"
+const convos = {};          // key -> [entries]
+const unread = {};          // peer id -> count
+const msgIndex = {};        // msgId -> { key, entry }
+let aliases = {};           // ip -> custom display name
+let myName = null;
 
 const $ = id => document.getElementById(id);
+const rid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const isImg = n => /\.(png|jpe?g|gif|webp|bmp|svg|heic)$/i.test(n || "");
+const fmtTime = ts => ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
 function save() { try { localStorage.setItem("td_convos", JSON.stringify(convos)); } catch (e) {} }
+function saveGroups() { try { localStorage.setItem("td_groups", JSON.stringify(groups)); } catch (e) {} }
+function saveAliases() { try { localStorage.setItem("td_aliases", JSON.stringify(aliases)); } catch (e) {} }
 function load() {
   try { Object.assign(convos, JSON.parse(localStorage.getItem("td_convos") || "{}")); } catch (e) {}
   try { aliases = JSON.parse(localStorage.getItem("td_aliases") || "{}"); } catch (e) {}
+  try { groups = JSON.parse(localStorage.getItem("td_groups") || "[]"); } catch (e) {}
   try { myName = localStorage.getItem("td_myname") || null; } catch (e) {}
 }
-function saveAliases() { try { localStorage.setItem("td_aliases", JSON.stringify(aliases)); } catch (e) {} }
 function displayName(p) { return (p && p.ip && aliases[p.ip]) || (p && p.name) || "Device"; }
 load();
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 
 const ws = new WebSocket(`ws://${location.host}/ws`);
-
 ws.onmessage = ev => {
   const m = JSON.parse(ev.data);
   if (m.type === "self") {
     me = m;
     $("myName").textContent = myName || m.name;
+    $("meSub").textContent = `${m.ip}:${m.port}`;
     if (myName && myName !== m.name) ws.send(JSON.stringify({ action: "setname", name: myName }));
   }
-  else if (m.type === "peers") renderPeers(m.peers);
-  else if (m.type === "chat") incoming(m.fromId, { mine: false, kind: "text", text: m.text });
-  else if (m.type === "file") incoming(m.fromId, { mine: false, kind: "file", name: m.name, size: m.size, url: m.url });
+  else if (m.type === "peers") { renderPeers(m.peers); renderGroups(); }
+  else if (m.type === "chat") incoming(m.fromId, { id: m.msgId, mine: false, kind: "text", text: m.text, ts: Date.now(), fromId: m.fromId });
+  else if (m.type === "file") incoming(m.fromId, { id: m.msgId, mine: false, kind: "file", name: m.name, size: m.size, url: m.url, isImage: isImg(m.name), ts: Date.now(), fromId: m.fromId });
+  else if (m.type === "status") updateStatus(m.msgId, m.state);
+  else if (m.type === "scandone") toast(`Scan complete — found ${m.found} device(s)`);
   else if (m.type === "error") toast(m.text);
 };
 
+/* ---------- sidebar ---------- */
 function renderPeers(list) {
-  // dedupe by ip (a restarted peer can arrive under a new id)
   const seen = {}, uniq = [];
-  list.forEach(p => {
-    const key = p.ip || p.id;
-    if (seen[key]) return;
-    seen[key] = 1; uniq.push(p);
-  });
+  list.forEach(p => { const k = p.ip || p.id; if (seen[k]) return; seen[k] = 1; uniq.push(p); });
   peers = {};
   uniq.forEach(p => peers[p.id] = p);
   const el = $("peers");
-  if (!uniq.length) { el.innerHTML = '<div class="empty">No devices yet. Add one by IP below.</div>'; }
+  if (!uniq.length) { el.innerHTML = '<div class="empty">No devices yet. Add by IP or Scan below.</div>'; }
   else {
     el.innerHTML = "";
     uniq.forEach(p => {
       const d = document.createElement("div");
-      d.className = "peer" + (p.id === active ? " active" : "");
-      const dot = document.createElement("span"); dot.className = "dot";
+      d.className = "peer" + (activeType === "peer" && p.id === active ? " active" : "");
+      const dot = document.createElement("span"); dot.className = "dot" + (p.online ? "" : " offline");
       const nm = document.createElement("span"); nm.className = "pname"; nm.textContent = displayName(p);
+      d.append(dot, nm);
+      if (unread[p.id]) { const b = document.createElement("span"); b.className = "badge"; b.textContent = unread[p.id]; d.append(b); }
       const edit = document.createElement("span"); edit.className = "act"; edit.textContent = "✏️"; edit.title = "Rename";
       edit.onclick = e => { e.stopPropagation(); renamePeer(p); };
       const rm = document.createElement("span"); rm.className = "act"; rm.textContent = "✕"; rm.title = "Remove";
       rm.onclick = e => { e.stopPropagation(); removePeer(p); };
-      d.append(dot, nm, edit, rm);
+      d.append(edit, rm);
       d.onclick = () => selectPeer(p.id);
       el.appendChild(d);
     });
   }
-  if (active && !peers[active]) { $("header").textContent = "Device removed or offline"; }
+}
+
+function renderGroups() {
+  const el = $("groups");
+  if (!groups.length) { el.innerHTML = '<div class="empty">No groups. Tap ＋ to create one.</div>'; return; }
+  el.innerHTML = "";
+  groups.forEach(g => {
+    const d = document.createElement("div");
+    d.className = "peer" + (activeType === "group" && g.id === active ? " active" : "");
+    const ic = document.createElement("span"); ic.textContent = "👥"; ic.style.fontSize = "13px";
+    const nm = document.createElement("span"); nm.className = "pname"; nm.textContent = g.name + ` (${g.memberIps.length})`;
+    const rm = document.createElement("span"); rm.className = "act"; rm.textContent = "✕"; rm.title = "Delete group";
+    rm.onclick = e => { e.stopPropagation(); if (confirm(`Delete group "${g.name}"?`)) { groups = groups.filter(x => x.id !== g.id); saveGroups(); if (active === g.id) clearActive(); renderGroups(); } };
+    d.append(ic, nm, rm);
+    d.onclick = () => selectGroup(g.id);
+    el.appendChild(d);
+  });
 }
 
 function renamePeer(p) {
@@ -166,167 +227,276 @@ function renamePeer(p) {
   if (name == null) return;
   const t = name.trim();
   if (t) aliases[p.ip] = t; else delete aliases[p.ip];
-  saveAliases();
-  renderPeers(Object.values(peers));
-  if (active === p.id) $("header").textContent = displayName(peers[p.id]);
+  saveAliases(); renderPeers(Object.values(peers));
+  if (activeType === "peer" && active === p.id) $("header").textContent = displayName(peers[p.id]);
 }
 
 function removePeer(p) {
-  if (!confirm(`Remove ${displayName(p)} from the sidebar?`)) return;
+  if (!confirm(`Remove ${displayName(p)}?`)) return;
   ws.send(JSON.stringify({ action: "removepeer", to: p.id }));
-  if (active === p.id) { active = null; $("composer").style.display = "none"; $("header").textContent = "Select a device to start"; $("msgs").innerHTML = '<div class="placeholder">Pick a device on the left.</div>'; }
+  if (activeType === "peer" && active === p.id) clearActive();
+}
+
+function clearActive() {
+  active = null;
+  $("composer").style.display = "none";
+  $("clearBtn").style.display = "none";
+  $("header").textContent = "Select a device to start";
+  $("msgs").innerHTML = '<div class="placeholder">Pick a device or group on the left.</div>';
 }
 
 function selectPeer(id) {
-  active = id;
+  active = id; activeType = "peer"; unread[id] = 0;
   $("composer").style.display = "flex";
+  $("clearBtn").style.display = "block";
   $("header").textContent = displayName(peers[id]) || "Chat";
-  renderPeers(Object.values(peers));
-  renderMsgs();
+  renderPeers(Object.values(peers)); renderGroups(); renderMsgs();
 }
 
-function incoming(fromId, msg) {
-  (convos[fromId] ||= []).push(msg);
-  save();
-  const who = displayName(peers[fromId]) || "Someone";
-  if (fromId === active && !document.hidden) { renderMsgs(); return; }
-  toast(`New message from ${who}`);
-  notify(who, msg.kind === "file" ? `Sent a file: ${msg.name}` : msg.text);
+function selectGroup(id) {
+  active = id; activeType = "group";
+  const g = groups.find(x => x.id === id);
+  $("composer").style.display = "flex";
+  $("clearBtn").style.display = "block";
+  $("header").textContent = "👥 " + (g ? g.name : "Group");
+  renderPeers(Object.values(peers)); renderGroups(); renderMsgs();
 }
 
-function notify(title, body) {
-  if ("Notification" in window && Notification.permission === "granted")
-    try { new Notification(title, { body }); } catch (e) {}
+/* ---------- messages ---------- */
+function activeMembers() {
+  if (activeType === "group") {
+    const g = groups.find(x => x.id === active);
+    if (!g) return [];
+    return Object.values(peers).filter(p => g.memberIps.includes(p.ip)).map(p => p.id);
+  }
+  return active ? [active] : [];
 }
+function groupHasPeer(gid, pid) {
+  const g = groups.find(x => x.id === gid); const p = peers[pid];
+  return !!(g && p && g.memberIps.includes(p.ip));
+}
+
+function currentMessages() {
+  if (activeType === "group") {
+    const g = groups.find(x => x.id === active); if (!g) return [];
+    let list = [...(convos[active] || [])];
+    Object.values(peers).filter(p => g.memberIps.includes(p.ip)).forEach(p => {
+      (convos[p.id] || []).forEach(m => { if (!m.mine) list.push({ ...m, fromName: displayName(p) }); });
+    });
+    return list.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  }
+  return convos[active] || [];
+}
+
+function tickFor(s) { return s === "delivered" ? "✓✓" : s === "sent" ? "✓" : s === "failed" ? "⚠️" : "🕓"; }
 
 function renderMsgs() {
   const el = $("msgs");
-  const list = convos[active] || [];
+  const list = currentMessages();
   if (!list.length) { el.innerHTML = '<div class="placeholder">No messages yet. Say hi 👋</div>'; return; }
   el.innerHTML = "";
   list.forEach(m => {
     const row = document.createElement("div");
     row.className = "row " + (m.mine ? "me" : "them");
-    const b = document.createElement("div");
-    b.className = "bubble";
+    if (!m.mine && activeType === "group" && m.fromName) {
+      const s = document.createElement("div"); s.className = "sender"; s.textContent = m.fromName; row.appendChild(s);
+    }
+    const b = document.createElement("div"); b.className = "bubble";
     if (m.kind === "text") b.textContent = m.text;
-    else {
+    else if (m.isImage && (m.previewUrl || m.url)) {
+      const img = document.createElement("img"); img.className = "thumb"; img.src = m.previewUrl || m.url;
+      if (m.url) img.onclick = () => { const a = document.createElement("a"); a.href = m.url; a.download = m.name; a.click(); };
+      b.appendChild(img);
+    } else {
       b.classList.add("file");
-      const a = document.createElement("a");
-      a.textContent = "⬇ " + m.name;
-      if (m.url) { a.href = m.url; a.setAttribute("download", m.name); }
-      else { a.style.color = "#cfe0ff"; }
+      const a = document.createElement("a"); a.textContent = "⬇ " + m.name + (m.prog != null ? `  (${m.prog}%)` : "");
+      if (m.url) { a.href = m.url; a.download = m.name; }
       b.appendChild(a);
-      const sz = document.createElement("span");
-      sz.className = "sz";
-      sz.textContent = humanSize(m.size);
-      b.appendChild(sz);
+      const sz = document.createElement("span"); sz.className = "sz"; sz.textContent = humanSize(m.size); b.appendChild(sz);
     }
     row.appendChild(b);
+    const meta = document.createElement("div"); meta.className = "meta";
+    const t = document.createElement("span"); t.textContent = fmtTime(m.ts); meta.appendChild(t);
+    if (m.mine && activeType === "peer") { const tk = document.createElement("span"); tk.textContent = tickFor(m.status); meta.appendChild(tk); }
+    row.appendChild(meta);
     el.appendChild(row);
   });
   el.scrollTop = el.scrollHeight;
 }
 
+function updateStatus(id, state) {
+  const r = msgIndex[id]; if (!r) return;
+  if (r.entry.status === "delivered") return;
+  if (state === "sent" && r.entry.status === "failed") {} else r.entry.status = state;
+  save();
+  if (active === r.key) renderMsgs();
+}
+
+function incoming(fromId, msg) {
+  (convos[fromId] ||= []).push(msg); save();
+  const who = displayName(peers[fromId]) || msg.fromName || "Someone";
+  const viewing = (activeType === "peer" && active === fromId) || (activeType === "group" && groupHasPeer(active, fromId));
+  if (viewing && !document.hidden) { renderMsgs(); return; }
+  unread[fromId] = (unread[fromId] || 0) + 1;
+  renderPeers(Object.values(peers));
+  beep(); toast(`New message from ${who}`);
+  notify(who, msg.kind === "file" ? `File: ${msg.name}` : msg.text);
+}
+
 function sendText() {
   const t = $("text").value.trim();
   if (!t || !active) return;
-  ws.send(JSON.stringify({ action: "chat", to: active, text: t }));
-  (convos[active] ||= []).push({ mine: true, kind: "text", text: t });
-  save();
-  $("text").value = "";
-  renderMsgs();
+  const targets = activeMembers();
+  if (!targets.length) { toast("No reachable devices in this view"); return; }
+  const entry = { id: rid(), mine: true, kind: "text", text: t, ts: Date.now(), status: "sending" };
+  (convos[active] ||= []).push(entry);
+  targets.forEach(pid => {
+    const mid = targets.length === 1 ? entry.id : rid();
+    msgIndex[mid] = { key: active, entry };
+    ws.send(JSON.stringify({ action: "chat", to: pid, text: t, msgId: mid }));
+  });
+  save(); $("text").value = ""; renderMsgs();
 }
 
+function sendFileToActive(file) {
+  if (!file || !active) return;
+  const targets = activeMembers();
+  if (!targets.length) { toast("No reachable devices in this view"); return; }
+  const isI = isImg(file.name);
+  const entry = { id: rid(), mine: true, kind: "file", name: file.name, size: file.size, url: null, previewUrl: isI ? URL.createObjectURL(file) : null, isImage: isI, ts: Date.now(), status: "sending" };
+  (convos[active] ||= []).push(entry); renderMsgs();
+  const fd = new FormData(); fd.append("file", file);
+  const xhr = new XMLHttpRequest(); xhr.open("POST", "/upload");
+  xhr.upload.onprogress = e => { if (e.lengthComputable) { entry.prog = Math.round(e.loaded / e.total * 100); if (active) renderMsgs(); } };
+  xhr.onload = () => {
+    if (xhr.status === 200) {
+      const r = JSON.parse(xhr.responseText); entry.prog = null;
+      targets.forEach(pid => {
+        const mid = targets.length === 1 ? entry.id : rid();
+        msgIndex[mid] = { key: active, entry };
+        ws.send(JSON.stringify({ action: "file", to: pid, fileId: r.id, msgId: mid }));
+      });
+    } else { entry.status = "failed"; toast("Upload failed"); }
+    save(); if (active) renderMsgs();
+  };
+  xhr.onerror = () => { entry.status = "failed"; if (active) renderMsgs(); };
+  xhr.send(fd);
+}
+
+/* ---------- controls ---------- */
 $("sendBtn").onclick = sendText;
 $("text").addEventListener("keydown", e => { if (e.key === "Enter") sendText(); });
+$("attachBtn").onclick = () => $("fileInput").click();
+$("fileInput").onchange = () => { [...$("fileInput").files].forEach(sendFileToActive); $("fileInput").value = ""; };
+
+$("clearBtn").onclick = () => {
+  if (!active || !confirm("Clear this conversation?")) return;
+  convos[active] = [];
+  if (activeType === "group") activeMembers().forEach(pid => convos[pid] = (convos[pid] || []).filter(m => m.mine));
+  save(); renderMsgs();
+};
 
 function addByIp() {
-  const ip = $("ipInput").value.trim();
-  if (!ip) return;
-  ws.send(JSON.stringify({ action: "addpeer", ip, port: 8765 }));
-  $("ipInput").value = "";
-  toast(`Connecting to ${ip}…`);
+  const raw = $("ipInput").value.trim();
+  if (!raw) return;
+  raw.split(/[\s,]+/).filter(Boolean).forEach(ip => ws.send(JSON.stringify({ action: "addpeer", ip, port: 8765 })));
+  $("ipInput").value = ""; toast("Connecting…");
 }
 $("addBtn").onclick = addByIp;
 $("ipInput").addEventListener("keydown", e => { if (e.key === "Enter") addByIp(); });
+$("scanBtn").onclick = () => { ws.send(JSON.stringify({ action: "scan" })); toast("Scanning the network…"); };
 
 $("editMe").onclick = () => {
   const name = prompt("Your device name (also shown to others):", $("myName").textContent);
   if (name == null) return;
-  const t = name.trim();
-  if (!t) return;
-  myName = t;
-  try { localStorage.setItem("td_myname", t); } catch (e) {}
-  $("myName").textContent = t;
-  ws.send(JSON.stringify({ action: "setname", name: t }));
-};
-$("attachBtn").onclick = () => $("fileInput").click();
-$("fileInput").onchange = () => {
-  [...$("fileInput").files].forEach(f => sendFile(f, active));
-  $("fileInput").value = "";
+  const t = name.trim(); if (!t) return;
+  myName = t; try { localStorage.setItem("td_myname", t); } catch (e) {}
+  $("myName").textContent = t; ws.send(JSON.stringify({ action: "setname", name: t }));
 };
 
-function sendFile(file, peerId) {
-  if (!file || !peerId) return;
-  const origName = file.name;
-  const entry = { mine: true, kind: "file", name: origName, size: file.size, url: null };
-  (convos[peerId] ||= []).push(entry);
-  if (peerId === active) renderMsgs();
+/* ---------- modals ---------- */
+function openModal(html) { $("modal").innerHTML = html; $("overlay").classList.add("show"); }
+function closeModal() { $("overlay").classList.remove("show"); }
+$("overlay").onclick = e => { if (e.target === $("overlay")) closeModal(); };
 
-  const fd = new FormData();
-  fd.append("file", file);
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/upload");
-  xhr.upload.onprogress = e => {
-    if (e.lengthComputable) {
-      entry.name = `${origName}  (${Math.round(e.loaded / e.total * 100)}%)`;
-      if (peerId === active) renderMsgs();
-    }
-  };
-  xhr.onload = () => {
-    if (xhr.status === 200) {
-      const r = JSON.parse(xhr.responseText);
-      ws.send(JSON.stringify({ action: "file", to: peerId, fileId: r.id }));
-      entry.url = "#sent";
-      entry.name = origName + "  (sent ✓)";
-    } else { entry.name = origName + "  (failed)"; toast("Upload failed"); }
-    save();
-    if (peerId === active) renderMsgs();
-  };
-  xhr.onerror = () => { entry.name = origName + "  (failed)"; toast("Upload failed"); };
-  xhr.send(fd);
-}
+$("qrBtn").onclick = () => {
+  openModal(`<h3>Connect a phone or Mac</h3>
+    <div class="qrwrap"><img src="/qr" alt="QR" onerror="this.parentNode.innerHTML='QR needs the qrcode library'"></div>
+    <div class="url">http://${me.ip}:${me.port}</div>
+    <div class="actions"><button class="btn" onclick="closeModal()">Close</button></div>`);
+};
 
-// drag & drop onto the chat
+$("newGroupBtn").onclick = () => {
+  const list = Object.values(peers);
+  if (!list.length) { toast("Add some devices first"); return; }
+  const rows = list.map(p => `<label class="mp"><input type="checkbox" value="${p.ip}"> ${displayName(p)}</label>`).join("");
+  openModal(`<h3>New group</h3>
+    <input type="text" id="gName" placeholder="Group name" />
+    ${rows}
+    <div class="actions">
+      <button class="btn icon" onclick="closeModal()">Cancel</button>
+      <button class="btn" id="gCreate">Create</button>
+    </div>`);
+  $("gCreate").onclick = () => {
+    const name = ($("gName").value || "").trim();
+    const ips = [...$("modal").querySelectorAll("input[type=checkbox]:checked")].map(c => c.value);
+    if (!name || !ips.length) { toast("Name and at least one device required"); return; }
+    groups.push({ id: "g_" + rid(), name, memberIps: ips });
+    saveGroups(); renderGroups(); closeModal(); toast(`Group "${name}" created`);
+  };
+};
+
+/* ---------- drag & drop ---------- */
 const drop = $("droplay");
 let dragDepth = 0;
-const main = document.querySelector(".main");
-main.addEventListener("dragenter", e => { e.preventDefault(); if (active) { dragDepth++; drop.classList.add("show"); } });
-main.addEventListener("dragover", e => e.preventDefault());
-main.addEventListener("dragleave", e => { if (--dragDepth <= 0) { dragDepth = 0; drop.classList.remove("show"); } });
-main.addEventListener("drop", e => {
+const mainEl = document.querySelector(".main");
+mainEl.addEventListener("dragenter", e => { e.preventDefault(); if (active) { dragDepth++; drop.classList.add("show"); } });
+mainEl.addEventListener("dragover", e => e.preventDefault());
+mainEl.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; drop.classList.remove("show"); } });
+mainEl.addEventListener("drop", e => {
   e.preventDefault(); dragDepth = 0; drop.classList.remove("show");
   if (!active) return;
-  [...e.dataTransfer.files].forEach(f => sendFile(f, active));
+  [...e.dataTransfer.files].forEach(sendFileToActive);
 });
 
+/* ---------- paste-to-send ---------- */
+window.addEventListener("paste", e => {
+  if (!active) return;
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) { e.preventDefault(); files.forEach(sendFileToActive); }
+});
+
+/* ---------- helpers ---------- */
 function humanSize(n) {
   if (n == null) return "";
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return n.toFixed(i ? 1 : 0) + " " + u[i];
 }
-
 let toastTimer;
 function toast(msg) {
-  const t = $("toast");
-  t.textContent = msg;
-  t.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 3500);
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 3500);
 }
+function notify(title, body) {
+  if ("Notification" in window && Notification.permission === "granted")
+    try { new Notification(title, { body }); } catch (e) {}
+}
+let audioCtx;
+function beep() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = 660; o.type = "sine";
+    o.connect(g); g.connect(audioCtx.destination);
+    g.gain.setValueAtTime(0.001, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.15, audioCtx.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+    o.start(); o.stop(audioCtx.currentTime + 0.26);
+  } catch (e) {}
+}
+
+renderGroups();
 </script>
 </body>
 </html>
