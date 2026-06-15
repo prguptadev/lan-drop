@@ -141,6 +141,7 @@
     <div class="me">
       <div class="name-row">
         <span class="name" id="myName">…</span>
+        <span class="act" id="devBtn" title="Remote dev / shared folders"></span>
         <span class="act" id="searchBtn" title="Search messages"></span>
         <span class="act" id="qrBtn" title="Show QR to connect"></span>
         <span class="act" id="settingsBtn" title="Settings"></span>
@@ -172,6 +173,7 @@
     <div class="header">
       <span class="backBtn" id="backBtn">‹</span>
       <span class="htitle" id="header">Select a device to start</span>
+      <span class="hbtn" id="projectBtn" style="display:none">Project</span>
       <span class="hbtn" id="termBtn" style="display:none">Terminal</span>
       <span class="hbtn" id="clearBtn" style="display:none">Clear chat</span>
     </div>
@@ -210,6 +212,8 @@ const msgIndex = {};
 let aliases = {};
 let myName = null;
 let settings = { preview: true, sound: true, theme: "dark" };
+let myShares = [];
+let workspaces = [];
 
 const $ = id => document.getElementById(id);
 const rid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -260,6 +264,13 @@ function handleMsg(ev) {
   else if (m.type === "scandone") toast(`Scan complete — found ${m.found} device(s)`);
   else if (m.type === "clip") toast(`Clipboard from ${m.from} — ready to paste (⌘V)`);
   else if (m.type === "toast") toast(m.text);
+  else if (m.type === "myshares") { myShares = m.shares || []; if (devModalOpen()) showDevModal(); }
+  else if (m.type === "workspaces") { workspaces = m.workspaces || []; if (devModalOpen()) showDevModal(); }
+  else if (m.type === "peershares") {
+    if (m.error === "pin") { savePin(peers[m.peerId] && peers[m.peerId].ip, ""); toast("Wrong PIN for that device"); }
+    else if (m.error) toast("Couldn't reach that device");
+    else showSharePicker(m.peerId, m.shares || []);
+  }
   else if (m.type === "error") toast(m.text);
 }
 
@@ -339,6 +350,7 @@ function selectPeer(id) {
   $("composer").style.display = "flex";
   $("clearBtn").style.display = "block";
   $("termBtn").style.display = peers[id] && peers[id].terminal ? "block" : "none";
+  $("projectBtn").style.display = peers[id] && peers[id].online ? "block" : "none";
   $("header").textContent = displayName(peers[id]) || "Chat";
   renderPeers(Object.values(peers)); renderGroups(); renderMsgs();
 }
@@ -350,6 +362,7 @@ function selectGroup(id) {
   $("composer").style.display = "flex";
   $("clearBtn").style.display = "block";
   $("termBtn").style.display = "none";
+  $("projectBtn").style.display = "none";
   $("header").textContent = (g ? g.name : "Group");
   renderPeers(Object.values(peers)); renderGroups(); renderMsgs();
 }
@@ -400,6 +413,51 @@ function closeTerminal() {
   }
 }
 $("termClose").onclick = closeTerminal;
+
+/* ---------- remote dev (shares + workspaces) ---------- */
+function devModalOpen() { return $("overlay").classList.contains("show") && /Remote dev/.test($("modal").textContent || ""); }
+
+function showDevModal() {
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const shareRows = myShares.length
+    ? myShares.map(s => `<div class="mp" style="justify-content:space-between"><span title="${esc(s.root)}">${esc(s.name)}</span><span class="act" data-rm="${s.id}">✕</span></div>`).join("")
+    : '<div class="empty">No shared folders yet</div>';
+  const wsRows = workspaces.length
+    ? workspaces.map(w => `<div class="mp" style="justify-content:space-between;align-items:flex-start"><span>${esc(w.name)} · ${esc(w.mode)} · ${esc(w.status || "")}<br><code style="font-size:11px;opacity:.8">${esc(w.local)}</code></span><span class="act" data-close="${w.id}">✕</span></div>`).join("")
+    : '<div class="empty">No active projects</div>';
+  openModal(`<h3>Remote dev</h3>
+    <div class="sec" style="padding:0 0 6px">Folders I share</div>${shareRows}
+    <div class="addpeer-row" style="margin-top:8px"><input type="text" id="shareInput" placeholder="/Users/you/code/project" /><button class="btn" id="shareAdd">Share</button></div>
+    <div class="sec" style="padding:14px 0 6px">Projects mirrored here</div>${wsRows}
+    <div class="actions"><button class="btn" onclick="closeModal()">Done</button></div>`);
+  $("shareAdd").onclick = () => { const p = $("shareInput").value.trim(); if (p) { wsSend({ action: "addshare", path: p }); $("shareInput").value = ""; } };
+  $("modal").querySelectorAll("[data-rm]").forEach(x => x.onclick = () => wsSend({ action: "removeshare", id: x.getAttribute("data-rm") }));
+  $("modal").querySelectorAll("[data-close]").forEach(x => x.onclick = () => wsSend({ action: "closeproject", id: x.getAttribute("data-close") }));
+}
+$("devBtn").onclick = showDevModal;
+
+function openProjectFlow(peerId) {
+  const p = peers[peerId]; if (!p) return;
+  let pin = loadPins()[p.ip] || "";
+  if (!pin) { pin = (prompt(`Enter ${displayName(p)}'s PIN to open a project:`) || "").trim(); if (!pin) return; savePin(p.ip, pin); }
+  pendingProjectPin = pin;
+  wsSend({ action: "listshares", to: peerId, pin });
+  toast("Loading shared folders…");
+}
+$("projectBtn").onclick = () => { if (activeType === "peer" && active) openProjectFlow(active); };
+
+function showSharePicker(peerId, shares) {
+  if (!shares.length) { toast("That device isn't sharing any folders"); return; }
+  const pin = pendingProjectPin || loadPins()[peers[peerId] && peers[peerId].ip] || "";
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const rows = shares.map(s => `<div class="mp" style="justify-content:space-between"><span>${esc(s.name)}</span><span><button class="btn" data-id="${s.id}" data-name="${esc(s.name)}" data-mode="sync">Sync</button> <button class="btn icon" data-id="${s.id}" data-name="${esc(s.name)}" data-mode="fuse">Mount</button></span></div>`).join("");
+  openModal(`<h3>Open a project from ${esc(displayName(peers[peerId]))}</h3>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Sync = copy + keep in sync · Mount = live FUSE (needs macFUSE)</div>
+    ${rows}<div class="actions"><button class="btn icon" onclick="closeModal()">Close</button></div>`);
+  $("modal").querySelectorAll("button[data-id]").forEach(b => {
+    b.onclick = () => { wsSend({ action: "openproject", to: peerId, shareId: b.getAttribute("data-id"), name: b.getAttribute("data-name"), mode: b.getAttribute("data-mode"), pin }); closeModal(); toast("Setting up project…"); };
+  });
+}
 $("backBtn").onclick = () => document.body.classList.remove("show-chat");
 
 /* ---------- messages ---------- */
@@ -845,6 +903,7 @@ const ICONS = {
   mic: '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>',
   folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
   stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
+  code: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
 };
 function svg(name) {
   return `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ICONS.file}</svg>`;
@@ -859,6 +918,7 @@ function fileIconName(name) {
   return "file";
 }
 function applyIcons() {
+  $("devBtn").innerHTML = svg("code");
   $("searchBtn").innerHTML = svg("search");
   $("qrBtn").innerHTML = svg("qr");
   $("settingsBtn").innerHTML = svg("settings");

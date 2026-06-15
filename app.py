@@ -29,7 +29,10 @@ NAME_FILE = BASE_DIR / ".displayname"
 KNOWN_FILE = BASE_DIR / "known_peers.json"
 OUTBOX_FILE = BASE_DIR / "outbox.json"
 CONFIG_FILE = BASE_DIR / "config.json"
+SHARES_FILE = BASE_DIR / "shares.json"
+WORKSPACES_FILE = BASE_DIR / "workspaces.json"
 SAVE_DIR = Path.home() / "Downloads" / "LanDrop"
+WS_ROOT = Path.home() / "LanDrop-Workspaces"
 
 
 def get_local_ip():
@@ -66,6 +69,10 @@ class App:
         self.autosave = cfg.get("autosave", True)        # save incoming files to ~/Downloads/LanDrop
         self.terminal_enabled = cfg.get("terminal_enabled", False)
         self.terminal_pin = cfg.get("terminal_pin") or None
+        self.shares = self._load_json(SHARES_FILE, {})            # host side: shareId -> {name, root}
+        self.workspaces = self._load_json(WORKSPACES_FILE, {})    # client side: wsId -> {...}
+        self.sync_sessions = {}   # wsId -> SyncSession
+        self.fuse_stops = {}      # wsId -> stop callable
 
     @staticmethod
     def _load_json(path, default):
@@ -277,6 +284,8 @@ class App:
                                       "terminalEnabled": self.terminal_enabled,
                                       "terminalHasPin": bool(self.terminal_pin)}))
         await ws.send_str(json.dumps({"type": "peers", "peers": self._peer_list()}))
+        await self._broadcast_shares()
+        await self._broadcast_workspaces()
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
@@ -327,6 +336,34 @@ class App:
                 peer = self.peers.get(pid)
                 if peer:
                     await self._send_clipboard(peer)
+            return
+        if action == "addshare":
+            path = os.path.expanduser((data.get("path") or "").strip())
+            if not path or not os.path.isdir(path):
+                await self._broadcast({"type": "error", "text": f"Not a folder: {path}"})
+                return
+            sid = uuid.uuid4().hex[:12]
+            self.shares[sid] = {"name": os.path.basename(path.rstrip("/")) or path, "root": str(Path(path).resolve())}
+            self._save_shares()
+            await self._broadcast_shares()
+            await self._broadcast({"type": "toast", "text": f"Sharing {self.shares[sid]['name']}"})
+            return
+        if action == "removeshare":
+            self.shares.pop(data.get("id"), None)
+            self._save_shares()
+            await self._broadcast_shares()
+            return
+        if action == "listshares":
+            peer = self.peers.get(data.get("to"))
+            if peer:
+                res = await self._remote_shares(peer, data.get("pin"))
+                await self._broadcast({"type": "peershares", "peerId": peer["id"], **res})
+            return
+        if action == "openproject":
+            await self._open_project(data)
+            return
+        if action == "closeproject":
+            await self._close_project(data.get("id"))
             return
         peer = self.peers.get(data.get("to"))
         if not peer:
@@ -673,6 +710,224 @@ class App:
                 pass
         return ws
 
+    # ---------- file shares (host side) ----------
+    def _save_shares(self):
+        try:
+            SHARES_FILE.write_text(json.dumps(self.shares))
+        except Exception:
+            pass
+
+    def _save_workspaces(self):
+        try:
+            WORKSPACES_FILE.write_text(json.dumps(self.workspaces))
+        except Exception:
+            pass
+
+    def _fs_auth(self, request):
+        return not self.terminal_pin or request.query.get("pin") == self.terminal_pin
+
+    def _share_root(self, sid):
+        sh = self.shares.get(sid or "")
+        return Path(sh["root"]) if sh else None
+
+    @staticmethod
+    def _resolve(root, rel):
+        rel = (rel or "").lstrip("/")
+        try:
+            target = (root / rel).resolve()
+        except Exception:
+            return None
+        root_r = root.resolve()
+        if target == root_r or str(target).startswith(str(root_r) + os.sep):
+            return target
+        return None
+
+    async def shares_list(self, request):
+        if not self._fs_auth(request):
+            return web.json_response({"error": "pin"}, status=403)
+        return web.json_response({"shares": [{"id": k, "name": v["name"]} for k, v in self.shares.items()]})
+
+    async def fs_manifest(self, request):
+        if not self._fs_auth(request):
+            return web.Response(status=403)
+        root = self._share_root(request.query.get("share"))
+        if not root or not root.is_dir():
+            return web.Response(status=404)
+        files = {}
+        for p in root.rglob("*"):
+            if p.is_file():
+                try:
+                    st = p.stat()
+                    files[p.relative_to(root).as_posix()] = [int(st.st_mtime), st.st_size]
+                except OSError:
+                    pass
+        return web.json_response({"files": files})
+
+    async def fs_list(self, request):
+        if not self._fs_auth(request):
+            return web.Response(status=403)
+        root = self._share_root(request.query.get("share"))
+        target = self._resolve(root, request.query.get("path", "")) if root else None
+        if not target or not target.exists():
+            return web.Response(status=404)
+        entries = []
+        if target.is_dir():
+            for c in sorted(target.iterdir()):
+                try:
+                    st = c.stat()
+                except OSError:
+                    continue
+                entries.append({"name": c.name, "dir": c.is_dir(), "size": st.st_size, "mtime": int(st.st_mtime)})
+        return web.json_response({"entries": entries})
+
+    async def fs_stat(self, request):
+        if not self._fs_auth(request):
+            return web.Response(status=403)
+        root = self._share_root(request.query.get("share"))
+        target = self._resolve(root, request.query.get("path", "")) if root else None
+        if not target or not target.exists():
+            return web.Response(status=404)
+        st = target.stat()
+        return web.json_response({"dir": target.is_dir(), "size": st.st_size, "mtime": int(st.st_mtime)})
+
+    async def fs_read(self, request):
+        if not self._fs_auth(request):
+            return web.Response(status=403)
+        root = self._share_root(request.query.get("share"))
+        target = self._resolve(root, request.query.get("path", "")) if root else None
+        if not target or not target.is_file():
+            return web.Response(status=404)
+        return web.FileResponse(target)
+
+    async def fs_write(self, request):
+        if not self._fs_auth(request):
+            return web.Response(status=403)
+        root = self._share_root(request.query.get("share"))
+        target = self._resolve(root, request.query.get("path", "")) if root else None
+        if not target:
+            return web.Response(status=400)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "wb") as f:
+            async for chunk in request.content.iter_chunked(1024 * 256):
+                f.write(chunk)
+        st = target.stat()
+        return web.json_response({"mtime": int(st.st_mtime), "size": st.st_size})
+
+    async def fs_mkdir(self, request):
+        if not self._fs_auth(request):
+            return web.Response(status=403)
+        root = self._share_root(request.query.get("share"))
+        target = self._resolve(root, request.query.get("path", "")) if root else None
+        if not target:
+            return web.Response(status=400)
+        target.mkdir(parents=True, exist_ok=True)
+        return web.json_response({"ok": True})
+
+    async def fs_delete(self, request):
+        if not self._fs_auth(request):
+            return web.Response(status=403)
+        root = self._share_root(request.query.get("share"))
+        target = self._resolve(root, request.query.get("path", "")) if root else None
+        if target and target.exists():
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            except OSError:
+                pass
+        return web.json_response({"ok": True})
+
+    # ---------- workspaces (client side) ----------
+    async def _broadcast_shares(self):
+        await self._broadcast({"type": "myshares",
+                               "shares": [{"id": k, "name": v["name"], "root": v["root"]} for k, v in self.shares.items()]})
+
+    async def _broadcast_workspaces(self):
+        out = []
+        for w in self.workspaces.values():
+            sess = self.sync_sessions.get(w["id"])
+            out.append({**w, "status": sess.status if sess else ("mounted" if w["id"] in self.fuse_stops else "stopped")})
+        await self._broadcast({"type": "workspaces", "workspaces": out})
+
+    async def _remote_shares(self, peer, pin):
+        url = f"http://{peer['ip']}:{peer['port']}/shares"
+        if pin:
+            url += "?pin=" + urllib.parse.quote(pin)
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=8)) as s:
+                async with s.get(url) as r:
+                    if r.status == 403:
+                        return {"error": "pin"}
+                    if r.status == 200:
+                        return await r.json()
+        except Exception:
+            pass
+        return {"error": "unreachable"}
+
+    async def _open_project(self, data):
+        import remotefs
+        peer = self.peers.get(data.get("to"))
+        if not peer:
+            return
+        name = self._safe_name(data.get("name") or "project")
+        mode = data.get("mode", "sync")
+        pin = data.get("pin", "")
+        share_id = data.get("shareId")
+        wsid = uuid.uuid4().hex[:8]
+        local = WS_ROOT / name
+        base = f"http://{peer['ip']}:{peer['port']}"
+        try:
+            if mode == "fuse":
+                stop = remotefs.mount_fuse(base, share_id, pin, str(local))
+                self.fuse_stops[wsid] = stop
+            else:
+                sess = remotefs.SyncSession(base, share_id, pin, str(local),
+                                            log=lambda m, n=name: self._broadcast({"type": "toast", "text": f"[{n}] {m}"}))
+                await sess.start()
+                self.sync_sessions[wsid] = sess
+        except Exception as e:
+            await self._broadcast({"type": "error", "text": str(e)})
+            return
+        self.workspaces[wsid] = {"id": wsid, "name": name, "mode": mode, "local": str(local),
+                                 "peer": peer["id"], "peerName": peer["name"], "shareId": share_id, "pin": pin}
+        self._save_workspaces()
+        await self._broadcast_workspaces()
+        await self._broadcast({"type": "toast", "text": f"Project ready — cd {local}"})
+
+    async def _close_project(self, wsid):
+        sess = self.sync_sessions.pop(wsid, None)
+        if sess:
+            await sess.stop()
+        stop = self.fuse_stops.pop(wsid, None)
+        if stop:
+            try:
+                stop()
+            except Exception:
+                pass
+        self.workspaces.pop(wsid, None)
+        self._save_workspaces()
+        await self._broadcast_workspaces()
+
+    async def resume_workspaces(self):
+        import remotefs
+        for w in list(self.workspaces.values()):
+            peer = self.peers.get(w.get("peer"))
+            ip = peer["ip"] if peer else None
+            port = peer["port"] if peer else None
+            if not ip:
+                # fall back to any known address for that peer name later; skip for now
+                continue
+            base = f"http://{ip}:{port}"
+            try:
+                if w["mode"] == "sync":
+                    sess = remotefs.SyncSession(base, w["shareId"], w.get("pin", ""), w["local"],
+                                                log=lambda m, n=w["name"]: self._broadcast({"type": "toast", "text": f"[{n}] {m}"}))
+                    await sess.start()
+                    self.sync_sessions[w["id"]] = sess
+            except Exception:
+                pass
+
     async def upload_folder(self, request):
         reader = await request.multipart()
         workdir = Path(tempfile.mkdtemp(prefix="ldfolder_"))
@@ -734,6 +989,14 @@ async def serve(name, port, announce=True):
         web.post("/uploadfolder", app_obj.upload_folder),
         web.get("/download/{id}", app_obj.download),
         web.get("/termws", app_obj.termws),
+        web.get("/shares", app_obj.shares_list),
+        web.get("/fs/manifest", app_obj.fs_manifest),
+        web.get("/fs/list", app_obj.fs_list),
+        web.get("/fs/stat", app_obj.fs_stat),
+        web.get("/fs/read", app_obj.fs_read),
+        web.post("/fs/write", app_obj.fs_write),
+        web.post("/fs/mkdir", app_obj.fs_mkdir),
+        web.post("/fs/delete", app_obj.fs_delete),
     ])
     vendor_dir = BASE_DIR / "vendor"
     if vendor_dir.is_dir():
@@ -745,6 +1008,7 @@ async def serve(name, port, announce=True):
     await app_obj.start_discovery()
     await app_obj.reconnect_known()
     asyncio.ensure_future(app_obj.heartbeat())
+    asyncio.ensure_future(app_obj.resume_workspaces())
 
     if announce:
         print(f"\n  Lan Drop  —  '{app_obj.name}'")

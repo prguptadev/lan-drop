@@ -11,6 +11,8 @@ __pycache__/
 known_peers.json
 outbox.json
 config.json
+shares.json
+workspaces.json
 
 # macOS
 .DS_Store
