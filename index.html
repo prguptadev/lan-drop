@@ -97,13 +97,10 @@
   .quote { font-size: 12px; color: var(--muted); border-left: 3px solid var(--accent); padding: 2px 8px; margin-bottom: 3px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .reacts { display: flex; gap: 4px; margin: 3px 4px 0; }
   .react { background: var(--panel2); border-radius: 10px; padding: 1px 7px; font-size: 12px; }
-  .msgacts { position: absolute; top: -12px; display: none; gap: 2px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 2px 4px; box-shadow: 0 2px 8px #00000033; z-index: 3; }
-  .row.me .msgacts { right: 4px; }
-  .row.them .msgacts { left: 4px; }
-  .row:hover .msgacts { display: flex; }
-  .msgacts span { cursor: pointer; padding: 3px 5px; border-radius: 5px; display: inline-flex; }
-  .msgacts span:hover { background: var(--hover); }
-  .msgacts .ic { width: 15px; height: 15px; }
+  .msgacts-inline { display: inline-flex; gap: 1px; margin-left: 6px; }
+  .msgacts-inline span { cursor: pointer; opacity: .4; padding: 0 2px; display: inline-flex; align-items: center; }
+  .msgacts-inline span:hover { opacity: 1; }
+  .msgacts-inline .ic { width: 14px; height: 14px; }
   .peer.unread .pname { font-weight: 700; }
   .toast.clickable { pointer-events: auto; cursor: pointer; background: var(--accent); }
   .reactpicker { position: fixed; display: flex; gap: 2px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 4px 6px; box-shadow: 0 4px 14px #00000044; z-index: 60; }
@@ -674,17 +671,17 @@ function renderMsgs() {
     const meta = document.createElement("div"); meta.className = "meta";
     const t = document.createElement("span"); t.textContent = fmtTime(m.ts); meta.appendChild(t);
     if (m.mine && activeType === "peer") { const tk = document.createElement("span"); tk.textContent = tickFor(m.status); meta.appendChild(tk); }
+    const acts = document.createElement("span"); acts.className = "msgacts-inline";
+    const cp = document.createElement("span"); cp.innerHTML = svg("copy"); cp.title = "Copy"; cp.onclick = ev => { ev.stopPropagation(); copyMsg(m); };
+    const rb = document.createElement("span"); rb.innerHTML = svg("reply"); rb.title = "Reply"; rb.onclick = ev => { ev.stopPropagation(); setReply(m); };
+    const eb = document.createElement("span"); eb.innerHTML = svg("smile"); eb.title = "React"; eb.onclick = ev => openReactPicker(ev, m);
+    acts.append(cp, rb, eb); meta.appendChild(acts);
     row.appendChild(meta);
     if (m.reactions && Object.keys(m.reactions).length) {
       const rc = document.createElement("div"); rc.className = "reacts";
       Object.entries(m.reactions).forEach(([em, c]) => { const s = document.createElement("span"); s.className = "react"; s.textContent = c > 1 ? `${em} ${c}` : em; rc.appendChild(s); });
       row.appendChild(rc);
     }
-    const acts = document.createElement("div"); acts.className = "msgacts";
-    const rb = document.createElement("span"); rb.innerHTML = svg("reply"); rb.title = "Reply"; rb.onclick = ev => { ev.stopPropagation(); setReply(m); };
-    const cp = document.createElement("span"); cp.innerHTML = svg("copy"); cp.title = "Copy"; cp.onclick = ev => { ev.stopPropagation(); copyMsg(m); };
-    const eb = document.createElement("span"); eb.innerHTML = svg("smile"); eb.title = "React"; eb.onclick = ev => openReactPicker(ev, m);
-    acts.append(rb, cp, eb); row.appendChild(acts);
     el.appendChild(row);
     prevSender = senderKey; prevTs = m.ts || 0;
   });
