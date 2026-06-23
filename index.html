@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Lan Drop</title>
 <link rel="stylesheet" href="/vendor/xterm.css" />
-<link rel="stylesheet" href="/vendor/hljs-theme.css" />
+<link id="hljsTheme" rel="stylesheet" href="/vendor/hljs-dark.css" />
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/xterm-addon-fit.js"></script>
 <script src="/vendor/highlight.min.js"></script>
@@ -103,9 +103,13 @@
   .bubble a.link { color: inherit; text-decoration: underline; }
   .codewrap { position: relative; margin: 4px 0; max-width: 100%; }
   .bubble pre.code { background: #1b1b22; color: #e6e6e6; border: 1px solid #ffffff14; border-radius: 10px; padding: 10px 12px; margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.5; max-height: 360px; overflow: auto; white-space: pre; max-width: 100%; }
+  .bubble pre.code code.hljs { background: transparent; padding: 0; }
+  html[data-theme="light"] .bubble pre.code { background: #f6f8fa; color: #24292f; border-color: #d0d7de; }
   .code-copy { position: absolute; top: 7px; right: 9px; font-size: 11px; color: #cfcfcf; cursor: pointer; background: #ffffff1f; border-radius: 5px; padding: 2px 8px; opacity: 0; }
   .codewrap:hover .code-copy { opacity: 1; }
   .code-copy:hover { color: #fff; background: #ffffff33; }
+  html[data-theme="light"] .code-copy { color: #57606a; background: #00000010; }
+  html[data-theme="light"] .code-copy:hover { color: #111; background: #00000018; }
   .bubble.codeonly { background: transparent !important; padding: 0; width: fit-content; max-width: min(560px, 100%); }
   .codeonly .codewrap { max-width: 100%; }
   .codeonly pre.code { max-width: 100%; }
@@ -316,7 +320,12 @@ function previewText(id) {
   if (isAudio(m.name)) return pre + "Voice message";
   return pre + m.name;
 }
-function applyTheme() { document.documentElement.setAttribute("data-theme", settings.theme || "dark"); }
+function applyTheme() {
+  const t = settings.theme || "dark";
+  document.documentElement.setAttribute("data-theme", t);
+  const lk = document.getElementById("hljsTheme");
+  if (lk) lk.href = t === "light" ? "/vendor/hljs-light.css" : "/vendor/hljs-dark.css";
+}
 load(); applyTheme();
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 
@@ -643,12 +652,11 @@ function dayLabel(ts) {
 }
 function looksLikeCode(text) {
   if (!text) return false;
-  const lines = text.split("\n");
-  if (lines.length < 2) return false;
-  const codeHints = /(=>|;\s*$|\{\s*$|\b(function|const|let|var|def|class|import|export|return|public|private|async|await)\b|^\s*(#include|package |using )|<\/?[a-z][^>]*>|^\s*[}\])];?\s*$)/m;
-  const mermaid = /\b(sequenceDiagram|graph\s+(TD|LR|BT|RL)|flowchart|classDiagram|gantt|stateDiagram|erDiagram|journey|participant)\b|--?>>?/;
-  const indented = lines.filter(l => /^\s{2,}\S/.test(l)).length;
-  return codeHints.test(text) || mermaid.test(text) || indented >= 3;
+  if (text.split("\n").length < 2) return false;
+  // strong code signals only — avoids turning normal multi-line prose into a code block
+  const codeHints = /(=>|;\s*$|\{\s*$|^\s*[}\])];?\s*$|\b(function|const|let|var|def|class|import|export|public|private|async|await)\b|^\s*(#include|package |using |from\s+\S+\s+import))/m;
+  const mermaid = /\b(sequenceDiagram|graph\s+(TD|LR|BT|RL)|flowchart|classDiagram|gantt|stateDiagram|erDiagram|journey|participant)\b|->>|-->>/;
+  return codeHints.test(text) || mermaid.test(text);
 }
 function makeCodeBlock(container, body, lang) {
   body = body.replace(/\n$/, "");
