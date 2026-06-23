@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Lan Drop</title>
 <link rel="stylesheet" href="/vendor/xterm.css" />
+<link rel="stylesheet" href="/vendor/hljs-theme.css" />
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/xterm-addon-fit.js"></script>
+<script src="/vendor/highlight.min.js"></script>
 <style>
   :root {
     --bg: #1f1f23; --panel: #2a2a30; --panel2: #33333b; --accent: #5b8def;
@@ -40,7 +42,21 @@
   .peer .act { opacity: 0; font-size: 12px; padding: 2px 4px; border-radius: 5px; flex: none; }
   .peer:hover .act { opacity: .6; }
   .peer .act:hover { opacity: 1; background: var(--hover); }
+  .peer .ptext { flex: 1; min-width: 0; }
+  .peer .prow1 { display: flex; align-items: baseline; gap: 6px; }
+  .peer .ptime { font-size: 11px; color: var(--muted); flex: none; }
+  .peer.active .ptime { color: #ffffffcc; }
+  .peer .preview { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+  .peer.active .preview { color: #ffffffcc; }
+  .peer.unread .preview { color: var(--text); font-weight: 600; }
   .empty { padding: 14px 16px; color: var(--muted); font-size: 13px; }
+  .lightbox { position: fixed; inset: 0; background: #000000ee; display: none; align-items: center; justify-content: center; z-index: 70; flex-direction: column; gap: 14px; }
+  .lightbox.show { display: flex; }
+  .lightbox img { max-width: 92vw; max-height: 84vh; border-radius: 8px; }
+  .lightbox .lb-bar { display: flex; gap: 12px; }
+  .lightbox .lb-bar a, .lightbox .lb-bar span { color: #fff; background: #ffffff22; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; text-decoration: none; }
+  .jumpbtn { position: absolute; right: 18px; bottom: 86px; background: var(--accent); color: #fff; border-radius: 18px; padding: 7px 14px; font-size: 12px; cursor: pointer; box-shadow: 0 4px 12px #00000044; display: none; z-index: 8; }
+  .jumpbtn.show { display: block; }
   .addpeer { padding: 12px 14px; border-top: 1px solid var(--border); }
   .addpeer-title { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
   .addpeer-row { display: flex; gap: 6px; }
@@ -85,9 +101,19 @@
   .row.me.grouped .bubble { border-top-right-radius: 6px; }
   .row.them.grouped .bubble { border-top-left-radius: 6px; }
   .bubble a.link { color: inherit; text-decoration: underline; }
-  .bubble pre.code { background: #00000038; border-radius: 8px; padding: 8px 10px; margin: 4px 0; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.45; overflow-x: auto; white-space: pre; }
+  .codewrap { position: relative; margin: 4px 0; }
+  .bubble pre.code { background: #1b1b22; color: #e6e6e6; border-radius: 8px; padding: 9px 11px; margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.5; overflow-x: auto; white-space: pre; }
+  .bubble pre.code.collapsed { max-height: 220px; overflow: hidden; }
+  .codewrap.collapsed::after { content: ""; position: absolute; left: 0; right: 0; bottom: 28px; height: 40px; background: linear-gradient(transparent, #1b1b22); pointer-events: none; border-radius: 0 0 8px 8px; }
+  .code-copy { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #aaa; cursor: pointer; background: #ffffff14; border-radius: 5px; padding: 2px 7px; opacity: 0; }
+  .codewrap:hover .code-copy { opacity: 1; }
+  .code-copy:hover { color: #fff; }
+  .showmore { display: block; width: 100%; text-align: center; font-size: 12px; color: var(--accent); cursor: pointer; padding: 5px; background: none; border: none; }
   .bubble code.inlinecode { background: #00000038; border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
-  html[data-theme="light"] .bubble pre.code, html[data-theme="light"] .bubble code.inlinecode { background: #00000012; }
+  html[data-theme="light"] .bubble code.inlinecode { background: #00000012; }
+  .longtext.collapsed { max-height: 200px; overflow: hidden; position: relative; }
+  .longtext.collapsed::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 44px; background: linear-gradient(transparent, var(--them)); pointer-events: none; }
+  .row.me .longtext.collapsed::after { background: linear-gradient(transparent, var(--me)); }
   .sresult { padding: 8px 6px; border-radius: 8px; cursor: pointer; }
   .sresult:hover { background: var(--hover); }
   .sr-name { font-size: 12px; color: var(--muted); }
@@ -219,6 +245,7 @@
     <div class="syncdrop" id="syncdrop"></div>
     <div class="msgs" id="msgs"><div class="placeholder">Pick a device or group on the left.</div></div>
     <div class="droplay" id="droplay">Drop file to send</div>
+    <div class="jumpbtn" id="jumpbtn">↓ New messages</div>
     <div class="replybar" id="replybar" style="display:none"></div>
     <div class="composer" id="composer" style="display:none">
       <input type="file" id="fileInput" multiple style="display:none" />
@@ -232,6 +259,10 @@
     </div>
   </div>
 
+  <div class="lightbox" id="lightbox">
+    <img id="lbimg" alt="" />
+    <div class="lb-bar"><a id="lbdownload" download>Download</a><span id="lbclose">Close</span></div>
+  </div>
   <div class="xferpanel" id="xferpanel"></div>
   <div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
   <div class="overlay" id="termOverlay">
@@ -275,6 +306,15 @@ function load() {
   try { Object.assign(settings, JSON.parse(localStorage.getItem("td_settings") || "{}")); } catch (e) {}
 }
 function displayName(p) { return (p && p.ip && aliases[p.ip]) || (p && p.name) || "Device"; }
+function previewText(id) {
+  const c = convos[id] || []; const m = c[c.length - 1];
+  if (!m) return "No messages yet";
+  const pre = m.mine ? "You: " : "";
+  if (m.kind === "text") return pre + (m.text || "").replace(/\s+/g, " ").slice(0, 60);
+  if (isImg(m.name)) return pre + "Photo";
+  if (isAudio(m.name)) return pre + "Voice message";
+  return pre + m.name;
+}
 function applyTheme() { document.documentElement.setAttribute("data-theme", settings.theme || "dark"); }
 load(); applyTheme();
 if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
@@ -331,8 +371,16 @@ function renderPeers(list) {
       const d = document.createElement("div");
       d.className = "peer" + (activeType === "peer" && p.id === active ? " active" : "") + (unread[p.id] ? " unread" : "");
       const dot = document.createElement("span"); dot.className = "dot" + (p.online ? "" : " offline");
+      const txt = document.createElement("div"); txt.className = "ptext";
+      const row1 = document.createElement("div"); row1.className = "prow1";
       const nm = document.createElement("span"); nm.className = "pname"; nm.textContent = displayName(p);
-      d.append(dot, nm);
+      row1.appendChild(nm);
+      const conv = convos[p.id] || []; const last = conv[conv.length - 1];
+      if (last) { const tm = document.createElement("span"); tm.className = "ptime"; tm.textContent = fmtTime(last.ts); row1.appendChild(tm); }
+      txt.appendChild(row1);
+      const prev = document.createElement("div"); prev.className = "preview"; prev.textContent = previewText(p.id);
+      txt.appendChild(prev);
+      d.append(dot, txt);
       if (unread[p.id]) { const b = document.createElement("span"); b.className = "badge"; b.textContent = unread[p.id]; d.append(b); }
       const edit = document.createElement("span"); edit.className = "act"; edit.innerHTML = svg("pencil"); edit.title = "Rename";
       edit.onclick = e => { e.stopPropagation(); renamePeer(p); };
@@ -388,7 +436,7 @@ function clearActive() {
 }
 
 function selectPeer(id) {
-  active = id; activeType = "peer"; unread[id] = 0;
+  active = id; activeType = "peer"; unread[id] = 0; atBottom = true;
   document.body.classList.add("show-chat");
   $("composer").style.display = "flex";
   $("clearBtn").style.display = "block";
@@ -399,7 +447,7 @@ function selectPeer(id) {
 }
 
 function selectGroup(id) {
-  active = id; activeType = "group";
+  active = id; activeType = "group"; atBottom = true;
   document.body.classList.add("show-chat");
   const g = groups.find(x => x.id === id);
   $("composer").style.display = "flex";
@@ -592,21 +640,60 @@ function dayLabel(ts) {
   if (d.getFullYear() !== now.getFullYear()) opt.year = "numeric";
   return d.toLocaleDateString([], opt);
 }
-function renderRichText(container, text) {
-  // fenced code blocks first (```), then inline formatting on the rest
-  const parts = String(text).split("```");
-  parts.forEach((part, i) => {
-    if (i % 2 === 1) {
-      const pre = document.createElement("pre"); pre.className = "code";
-      let body = part;
-      const nl = part.indexOf("\n");
-      if (nl !== -1 && /^[a-zA-Z0-9+#.\-]*$/.test(part.slice(0, nl).trim())) body = part.slice(nl + 1);
-      pre.textContent = body.replace(/\n$/, "");
-      container.appendChild(pre);
-    } else {
-      renderInline(container, part);
+function looksLikeCode(text) {
+  if (!text) return false;
+  const lines = text.split("\n");
+  if (lines.length < 2) return false;
+  const codeHints = /(=>|;\s*$|\{\s*$|\b(function|const|let|var|def|class|import|export|return|public|private|async|await)\b|^\s*(#include|package |using )|<\/?[a-z][^>]*>|^\s*[}\])];?\s*$)/m;
+  const mermaid = /\b(sequenceDiagram|graph\s+(TD|LR|BT|RL)|flowchart|classDiagram|gantt|stateDiagram|erDiagram|journey|participant)\b|--?>>?/;
+  const indented = lines.filter(l => /^\s{2,}\S/.test(l)).length;
+  return codeHints.test(text) || mermaid.test(text) || indented >= 3;
+}
+function makeCodeBlock(container, body, lang) {
+  body = body.replace(/\n$/, "");
+  const wrap = document.createElement("div"); wrap.className = "codewrap";
+  const pre = document.createElement("pre"); pre.className = "code";
+  const codeEl = document.createElement("code"); codeEl.textContent = body;
+  pre.appendChild(codeEl);
+  try {
+    if (window.hljs) {
+      if (lang && hljs.getLanguage(lang)) { codeEl.className = "language-" + lang; hljs.highlightElement(codeEl); }
+      else { codeEl.innerHTML = hljs.highlightAuto(body).value; }
     }
-  });
+  } catch (e) {}
+  const cc = document.createElement("span"); cc.className = "code-copy"; cc.textContent = "Copy";
+  cc.onclick = ev => { ev.stopPropagation(); if (navigator.clipboard) navigator.clipboard.writeText(body).then(() => toast("Code copied")); };
+  wrap.append(pre, cc);
+  container.appendChild(wrap);
+  if (body.split("\n").length > 14) {
+    pre.classList.add("collapsed"); wrap.classList.add("collapsed");
+    const btn = document.createElement("button"); btn.className = "showmore"; btn.textContent = "Show more";
+    btn.onclick = ev => { ev.stopPropagation(); const c = pre.classList.toggle("collapsed"); wrap.classList.toggle("collapsed", c); btn.textContent = c ? "Show more" : "Show less"; };
+    container.appendChild(btn);
+  }
+}
+function renderRichText(container, text) {
+  text = String(text);
+  if (text.includes("```")) {
+    text.split("```").forEach((part, i) => {
+      if (i % 2 === 1) {
+        let body = part, lang = "";
+        const nl = part.indexOf("\n");
+        if (nl !== -1 && /^[a-zA-Z0-9+#.\-]*$/.test(part.slice(0, nl).trim())) { lang = part.slice(0, nl).trim(); body = part.slice(nl + 1); }
+        makeCodeBlock(container, body, lang);
+      } else renderInline(container, part);
+    });
+  } else if (looksLikeCode(text)) {
+    makeCodeBlock(container, text, "");
+  } else if (text.length > 600 || text.split("\n").length > 12) {
+    const wrap = document.createElement("div"); wrap.className = "longtext collapsed";
+    renderInline(wrap, text); container.appendChild(wrap);
+    const btn = document.createElement("button"); btn.className = "showmore"; btn.textContent = "Show more";
+    btn.onclick = ev => { ev.stopPropagation(); const c = wrap.classList.toggle("collapsed"); btn.textContent = c ? "Show more" : "Show less"; };
+    container.appendChild(btn);
+  } else {
+    renderInline(container, text);
+  }
 }
 function renderInline(container, text) {
   const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(https?:\/\/[^\s]+)/g;
@@ -662,7 +749,7 @@ function renderMsgs() {
     if (m.kind === "text") renderRichText(b, m.text);
     else if (m.isImage && settings.preview && (m.previewUrl || m.url)) {
       const img = document.createElement("img"); img.className = "thumb"; img.src = m.previewUrl || m.url;
-      if (m.url) img.onclick = () => { const a = document.createElement("a"); a.href = m.url; a.download = m.name; a.click(); };
+      img.onclick = () => openLightbox(m.previewUrl || m.url, m.url, m.name);
       b.appendChild(img);
     } else if (isAudio(m.name) && (m.previewUrl || m.url)) {
       const au = document.createElement("audio"); au.controls = true; au.src = m.previewUrl || m.url; b.appendChild(au);
@@ -685,8 +772,27 @@ function renderMsgs() {
     el.appendChild(row);
     prevSender = senderKey; prevTs = m.ts || 0;
   });
-  el.scrollTop = el.scrollHeight;
+  if (atBottom) el.scrollTop = el.scrollHeight; else $("jumpbtn").classList.add("show");
 }
+
+/* ---------- image lightbox ---------- */
+function openLightbox(src, dl, name) {
+  $("lbimg").src = src;
+  const a = $("lbdownload");
+  if (dl) { a.href = dl; a.download = name || "image"; a.style.display = ""; } else a.style.display = "none";
+  $("lightbox").classList.add("show");
+}
+$("lbclose").onclick = () => $("lightbox").classList.remove("show");
+$("lightbox").onclick = e => { if (e.target === $("lightbox")) $("lightbox").classList.remove("show"); };
+
+/* ---------- jump to bottom ---------- */
+let atBottom = true;
+const msgsEl = $("msgs");
+msgsEl.addEventListener("scroll", () => {
+  atBottom = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 60;
+  if (atBottom) $("jumpbtn").classList.remove("show");
+});
+$("jumpbtn").onclick = () => { atBottom = true; msgsEl.scrollTop = msgsEl.scrollHeight; $("jumpbtn").classList.remove("show"); };
 
 function updateStatus(id, state) {
   const r = msgIndex[id]; if (!r) return;
@@ -700,7 +806,7 @@ function incoming(fromId, msg) {
   (convos[fromId] ||= []).push(msg); save();
   const who = displayName(peers[fromId]) || msg.fromName || "Someone";
   const viewing = (activeType === "peer" && active === fromId) || (activeType === "group" && groupHasPeer(active, fromId));
-  if (viewing && !document.hidden) { renderMsgs(); return; }
+  if (viewing && !document.hidden) { renderMsgs(); renderPeers(Object.values(peers)); return; }
   unread[fromId] = (unread[fromId] || 0) + 1;
   renderPeers(Object.values(peers));
   beep();
@@ -775,7 +881,7 @@ function sendText() {
     wsSend({ action: "chat", to: pid, text: t, msgId: mid, replyTo: entry.replyTo });
   });
   clearReply();
-  save(); $("text").value = ""; autoGrow(); renderMsgs();
+  save(); $("text").value = ""; autoGrow(); renderMsgs(); renderPeers(Object.values(peers));
 }
 function autoGrow() { const ta = $("text"); ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 180) + "px"; }
 
