@@ -101,13 +101,14 @@
   .row.me.grouped .bubble { border-top-right-radius: 6px; }
   .row.them.grouped .bubble { border-top-left-radius: 6px; }
   .bubble a.link { color: inherit; text-decoration: underline; }
-  .codewrap { position: relative; margin: 4px 0; }
-  .bubble pre.code { background: #1b1b22; color: #e6e6e6; border-radius: 8px; padding: 9px 11px; margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.5; overflow-x: auto; white-space: pre; }
-  .bubble pre.code.collapsed { max-height: 220px; overflow: hidden; }
-  .codewrap.collapsed::after { content: ""; position: absolute; left: 0; right: 0; bottom: 28px; height: 40px; background: linear-gradient(transparent, #1b1b22); pointer-events: none; border-radius: 0 0 8px 8px; }
-  .code-copy { position: absolute; top: 6px; right: 8px; font-size: 11px; color: #aaa; cursor: pointer; background: #ffffff14; border-radius: 5px; padding: 2px 7px; opacity: 0; }
+  .codewrap { position: relative; margin: 4px 0; max-width: 100%; }
+  .bubble pre.code { background: #1b1b22; color: #e6e6e6; border: 1px solid #ffffff14; border-radius: 10px; padding: 10px 12px; margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.5; max-height: 360px; overflow: auto; white-space: pre; max-width: 100%; }
+  .code-copy { position: absolute; top: 7px; right: 9px; font-size: 11px; color: #cfcfcf; cursor: pointer; background: #ffffff1f; border-radius: 5px; padding: 2px 8px; opacity: 0; }
   .codewrap:hover .code-copy { opacity: 1; }
-  .code-copy:hover { color: #fff; }
+  .code-copy:hover { color: #fff; background: #ffffff33; }
+  .bubble.codeonly { background: transparent !important; padding: 0; width: fit-content; max-width: min(560px, 100%); }
+  .codeonly .codewrap { max-width: 100%; }
+  .codeonly pre.code { max-width: 100%; }
   .showmore { display: block; width: 100%; text-align: center; font-size: 12px; color: var(--accent); cursor: pointer; padding: 5px; background: none; border: none; }
   .bubble code.inlinecode { background: #00000038; border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
   html[data-theme="light"] .bubble code.inlinecode { background: #00000012; }
@@ -665,17 +666,13 @@ function makeCodeBlock(container, body, lang) {
   cc.onclick = ev => { ev.stopPropagation(); if (navigator.clipboard) navigator.clipboard.writeText(body).then(() => toast("Code copied")); };
   wrap.append(pre, cc);
   container.appendChild(wrap);
-  if (body.split("\n").length > 14) {
-    pre.classList.add("collapsed"); wrap.classList.add("collapsed");
-    const btn = document.createElement("button"); btn.className = "showmore"; btn.textContent = "Show more";
-    btn.onclick = ev => { ev.stopPropagation(); const c = pre.classList.toggle("collapsed"); wrap.classList.toggle("collapsed", c); btn.textContent = c ? "Show more" : "Show less"; };
-    container.appendChild(btn);
-  }
 }
 function renderRichText(container, text) {
   text = String(text);
   if (text.includes("```")) {
-    text.split("```").forEach((part, i) => {
+    const segs = text.split("```");
+    const hasText = segs.some((p, i) => i % 2 === 0 && p.trim());
+    segs.forEach((part, i) => {
       if (i % 2 === 1) {
         let body = part, lang = "";
         const nl = part.indexOf("\n");
@@ -683,8 +680,10 @@ function renderRichText(container, text) {
         makeCodeBlock(container, body, lang);
       } else renderInline(container, part);
     });
+    if (!hasText) container.classList.add("codeonly");
   } else if (looksLikeCode(text)) {
     makeCodeBlock(container, text, "");
+    container.classList.add("codeonly");
   } else if (text.length > 600 || text.split("\n").length > 12) {
     const wrap = document.createElement("div"); wrap.className = "longtext collapsed";
     renderInline(wrap, text); container.appendChild(wrap);
@@ -746,7 +745,7 @@ function renderMsgs() {
       row.appendChild(q);
     }
     const b = document.createElement("div"); b.className = "bubble";
-    if (m.kind === "text") renderRichText(b, m.text);
+    if (m.kind === "text") { renderRichText(b, m.text); }
     else if (m.isImage && settings.preview && (m.previewUrl || m.url)) {
       const img = document.createElement("img"); img.className = "thumb"; img.src = m.previewUrl || m.url;
       img.onclick = () => openLightbox(m.previewUrl || m.url, m.url, m.name);
