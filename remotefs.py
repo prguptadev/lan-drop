@@ -297,9 +297,16 @@ class SyncSession:
                         self.base_host[rel] = (int(meta.get("mtime", 0)), int(meta.get("size", 0)))
                         self.base_local[rel] = l
                     elif h_changed and l_changed:
-                        await self._emit(f"conflict on {rel} — keeping host copy")
-                        await self._pull(rel); pulled += 1
-                        self.base_host[rel] = h; self.base_local[rel] = _sig(self.local / rel)
+                        # last-modified-wins: newer mtime keeps its copy
+                        if h[0] >= l[0]:
+                            await self._emit(f"conflict on {rel} — host newer, pulling")
+                            await self._pull(rel); pulled += 1
+                            self.base_host[rel] = h; self.base_local[rel] = _sig(self.local / rel)
+                        else:
+                            await self._emit(f"conflict on {rel} — local newer, pushing")
+                            meta = await self._push(rel); pushed += 1
+                            self.base_host[rel] = (int(meta.get("mtime", 0)), int(meta.get("size", 0)))
+                            self.base_local[rel] = l
                 elif h and not l:
                     if self.base_local.get(rel) is not None:
                         await self._del_host(rel); deleted += 1

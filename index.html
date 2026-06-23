@@ -101,8 +101,11 @@
   .row.me .msgacts { right: 4px; }
   .row.them .msgacts { left: 4px; }
   .row:hover .msgacts { display: flex; }
-  .msgacts span { cursor: pointer; padding: 2px 5px; font-size: 13px; border-radius: 5px; }
+  .msgacts span { cursor: pointer; padding: 3px 5px; border-radius: 5px; display: inline-flex; }
   .msgacts span:hover { background: var(--hover); }
+  .msgacts .ic { width: 15px; height: 15px; }
+  .peer.unread .pname { font-weight: 700; }
+  .toast.clickable { pointer-events: auto; cursor: pointer; background: var(--accent); }
   .reactpicker { position: fixed; display: flex; gap: 2px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 4px 6px; box-shadow: 0 4px 14px #00000044; z-index: 60; }
   .reactpicker span { cursor: pointer; font-size: 18px; padding: 2px 4px; border-radius: 6px; }
   .reactpicker span:hover { background: var(--hover); }
@@ -118,7 +121,7 @@
   .filesub { font-size: 11px; opacity: .75; margin-top: 1px; }
   .filedl { text-decoration: none; color: inherit; font-size: 18px; padding: 4px; flex: none; }
   .composer { padding: 14px; border-top: 1px solid var(--border); display: flex; gap: 10px; align-items: center; }
-  .composer input[type=text] { flex: 1; background: var(--panel2); border: none; color: var(--text); padding: 11px 14px; border-radius: 10px; font-size: 14px; outline: none; }
+  .composer textarea { flex: 1; background: var(--panel2); border: none; color: var(--text); padding: 11px 14px; border-radius: 10px; font-size: 14px; outline: none; resize: none; font-family: inherit; line-height: 1.4; max-height: 180px; overflow-y: auto; }
   .btn { background: var(--accent); border: none; color: #fff; padding: 10px 16px; border-radius: 10px; cursor: pointer; font-size: 14px; }
   .btn.icon { background: var(--panel2); color: var(--text); padding: 10px 13px; }
   .btn.icon.recording { background: #c0392b; color: #fff; }
@@ -227,7 +230,7 @@
       <button class="btn icon" id="clipBtn" title="Send my clipboard to this device"></button>
       <button class="btn icon" id="attachBtn" title="Send file"></button>
       <button class="btn icon" id="folderBtn" title="Send a folder (zipped)"></button>
-      <input type="text" id="text" placeholder="Type a message…  (paste a screenshot to send it)" autocomplete="off" />
+      <textarea id="text" rows="1" placeholder="Type a message…  (Shift+Enter = newline, paste keeps formatting)"></textarea>
       <button class="btn" id="sendBtn">Send</button>
     </div>
   </div>
@@ -329,7 +332,7 @@ function renderPeers(list) {
     el.innerHTML = "";
     uniq.forEach(p => {
       const d = document.createElement("div");
-      d.className = "peer" + (activeType === "peer" && p.id === active ? " active" : "");
+      d.className = "peer" + (activeType === "peer" && p.id === active ? " active" : "") + (unread[p.id] ? " unread" : "");
       const dot = document.createElement("span"); dot.className = "dot" + (p.online ? "" : " offline");
       const nm = document.createElement("span"); nm.className = "pname"; nm.textContent = displayName(p);
       d.append(dot, nm);
@@ -678,9 +681,10 @@ function renderMsgs() {
       row.appendChild(rc);
     }
     const acts = document.createElement("div"); acts.className = "msgacts";
-    const rb = document.createElement("span"); rb.textContent = "↩"; rb.title = "Reply"; rb.onclick = ev => { ev.stopPropagation(); setReply(m); };
-    const eb = document.createElement("span"); eb.textContent = "☺"; eb.title = "React"; eb.onclick = ev => openReactPicker(ev, m);
-    acts.append(rb, eb); row.appendChild(acts);
+    const rb = document.createElement("span"); rb.innerHTML = svg("reply"); rb.title = "Reply"; rb.onclick = ev => { ev.stopPropagation(); setReply(m); };
+    const cp = document.createElement("span"); cp.innerHTML = svg("copy"); cp.title = "Copy"; cp.onclick = ev => { ev.stopPropagation(); copyMsg(m); };
+    const eb = document.createElement("span"); eb.innerHTML = svg("smile"); eb.title = "React"; eb.onclick = ev => openReactPicker(ev, m);
+    acts.append(rb, cp, eb); row.appendChild(acts);
     el.appendChild(row);
     prevSender = senderKey; prevTs = m.ts || 0;
   });
@@ -702,8 +706,9 @@ function incoming(fromId, msg) {
   if (viewing && !document.hidden) { renderMsgs(); return; }
   unread[fromId] = (unread[fromId] || 0) + 1;
   renderPeers(Object.values(peers));
-  beep(); toast(`New message from ${who}`);
-  notify(who, msg.kind === "file" ? `File: ${msg.name}` : msg.text);
+  beep();
+  toastClick(`New message from ${who} — click to open`, () => selectPeer(fromId));
+  notify(who, msg.kind === "file" ? `File: ${msg.name}` : msg.text, fromId);
 }
 
 let replyTarget = null;
@@ -726,6 +731,20 @@ function applyReaction(id, emoji) {
   (f.m.reactions ||= {}); f.m.reactions[emoji] = (f.m.reactions[emoji] || 0) + 1;
   save(); if (active) renderMsgs();
 }
+function copyMsg(m) {
+  const text = m.kind === "text" ? m.text : (m.name || "");
+  if (!text) return;
+  const ok = () => toast("Copied");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(ok).catch(fallbackCopy);
+  } else fallbackCopy();
+  function fallbackCopy() {
+    const ta = document.createElement("textarea"); ta.value = text;
+    ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); ok(); } catch (e) { toast("Copy failed"); }
+    ta.remove();
+  }
+}
 function react(m, emoji) {
   (m.reactions ||= {}); m.reactions[emoji] = (m.reactions[emoji] || 0) + 1;
   save(); if (active) renderMsgs();
@@ -746,8 +765,8 @@ function openReactPicker(ev, m) {
 document.addEventListener("click", closeReactPicker);
 
 function sendText() {
-  const t = $("text").value.trim();
-  if (!t || !active) return;
+  const t = $("text").value.replace(/\s+$/, "");   // keep leading/inner formatting, drop trailing
+  if (!t.trim() || !active) return;
   const targets = activeMembers();
   if (!targets.length) { toast("No reachable devices in this view"); return; }
   const entry = { id: rid(), mine: true, kind: "text", text: t, ts: Date.now(), status: "sending" };
@@ -759,8 +778,9 @@ function sendText() {
     wsSend({ action: "chat", to: pid, text: t, msgId: mid, replyTo: entry.replyTo });
   });
   clearReply();
-  save(); $("text").value = ""; renderMsgs();
+  save(); $("text").value = ""; autoGrow(); renderMsgs();
 }
+function autoGrow() { const ta = $("text"); ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 180) + "px"; }
 
 function sendFileToActive(file) {
   if (!file || !active) return;
@@ -793,7 +813,8 @@ function sendFileToActive(file) {
 
 /* ---------- controls ---------- */
 $("sendBtn").onclick = sendText;
-$("text").addEventListener("keydown", e => { if (e.key === "Enter") sendText(); });
+$("text").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendText(); } });
+$("text").addEventListener("input", autoGrow);
 $("attachBtn").onclick = () => $("fileInput").click();
 $("fileInput").onchange = () => { [...$("fileInput").files].forEach(sendFileToActive); $("fileInput").value = ""; };
 
@@ -1047,12 +1068,21 @@ function renderTransfers() {
 
 let toastTimer;
 function toast(msg) {
-  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  const t = $("toast"); t.textContent = msg; t.classList.add("show"); t.classList.remove("clickable"); t.onclick = null;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 3500);
 }
-function notify(title, body) {
+function toastClick(msg, fn) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show", "clickable");
+  t.onclick = () => { t.classList.remove("show", "clickable"); t.onclick = null; fn(); };
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.classList.remove("show", "clickable"); t.onclick = null; }, 6000);
+}
+function notify(title, body, fromId) {
   if ("Notification" in window && Notification.permission === "granted")
-    try { new Notification(title, { body }); } catch (e) {}
+    try {
+      const n = new Notification(title, { body });
+      if (fromId) n.onclick = () => { window.focus(); selectPeer(fromId); };
+    } catch (e) {}
 }
 let audioCtx;
 function beep() {
@@ -1093,6 +1123,9 @@ const ICONS = {
   folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
   stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
   code: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  reply: '<polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/>',
+  smile: '<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>',
 };
 function svg(name) {
   return `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ICONS.file}</svg>`;
