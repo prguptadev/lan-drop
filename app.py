@@ -447,6 +447,7 @@ class App:
         elif action == "file":
             meta = self.uploads.get(data.get("fileId"))
             if not meta:
+                await self._broadcast({"type": "status", "msgId": data.get("msgId"), "state": "failed"})
                 return
             # deliver in the background so a big/slow transfer never blocks the
             # browser's websocket (which would jam every following message).
