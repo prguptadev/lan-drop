@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import fcntl
+import ipaddress
 import json
 import os
 import pty
@@ -36,11 +37,52 @@ SAVE_DIR = Path.home() / "Downloads" / "LanDrop"
 WS_ROOT = Path.home() / "LanDrop-Workspaces"
 
 
-def get_local_ip():
+def _is_lan_ip(ip):
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if not a.is_private or a.is_loopback or a.is_link_local:
+        return False
+    if a in ipaddress.ip_network("100.64.0.0/10"):   # CGNAT — VPN/Netskope tunnels
+        return False
+    return True
+
+
+def get_local_ip(override=None):
+    """Return this Mac's real LAN IP, skipping VPN/Netskope tunnel interfaces.
+
+    The classic 'connect a socket to 8.8.8.8 and read getsockname()' trick
+    follows the default route — which a corporate agent (Netskope) hijacks
+    through a utun tunnel, so it returns the tunnel IP. Instead we prefer a
+    physical en* interface in a private LAN range, and allow an explicit
+    override for ambiguous multi-NIC / VPN setups.
+    """
+    if override and _is_lan_ip(override):
+        return override
+    try:
+        ifaces = subprocess.run(["ipconfig", "getiflist"], capture_output=True, timeout=3).stdout.decode().split()
+    except Exception:
+        ifaces = ["en0", "en1", "en2", "en3", "en4", "en5"]
+    found = []
+    for dev in ifaces:
+        if not dev.startswith("en"):   # skip utun*, ppp*, bridge, etc.
+            continue
+        try:
+            ip = subprocess.run(["ipconfig", "getifaddr", dev], capture_output=True, timeout=3).stdout.decode().strip()
+        except Exception:
+            ip = ""
+        if ip and _is_lan_ip(ip):
+            found.append(ip)
+    if found:
+        found.sort(key=lambda x: not x.startswith("192.168."))   # prefer home-LAN range
+        return found[0]
+    # fallback: default-route trick, but reject tunnel/CGNAT results
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
+        ip = s.getsockname()[0]
+        return ip if _is_lan_ip(ip) else "127.0.0.1"
     except Exception:
         return "127.0.0.1"
     finally:
@@ -48,7 +90,7 @@ def get_local_ip():
 
 
 class App:
-    def __init__(self, name, port):
+    def __init__(self, name, port, ip_override=None):
         self.name = name
         try:
             saved = NAME_FILE.read_text().strip()
@@ -58,7 +100,8 @@ class App:
             pass
         self.port = port
         self.id = uuid.uuid4().hex[:8]
-        self.ip = get_local_ip()
+        _cfg0 = self._load_json(CONFIG_FILE, {})
+        self.ip = get_local_ip(ip_override or _cfg0.get("advertise_ip"))
         self.peers = {}        # id -> {id, name, ip, port, _sname, online}
         self.uploads = {}      # fileId -> {path, name, size}
         self.browser_ws = set()
@@ -670,10 +713,17 @@ class App:
             self._flushing.discard(ip)
 
     async def pending(self, request):
-        # A peer pulls items we queued for it. Works even when WE can't reach
-        # THEM (e.g. their firewall blocks our outbound) — they reach us.
-        rip = request.remote
-        items = self.outbox.pop(rip, [])
+        # A peer pulls items we queued for it. Match by the peer's known IP(s)
+        # AND the request source IP (they can differ behind NAT/VPN).
+        keys = set()
+        if request.remote:
+            keys.add(request.remote)
+        p = self.peers.get(request.query.get("for"))
+        if p and p.get("ip"):
+            keys.add(p["ip"])
+        items = []
+        for k in keys:
+            items.extend(self.outbox.pop(k, []))
         if items:
             self._save_outbox()
         out = []
@@ -742,12 +792,16 @@ class App:
         data = await request.json()
         fid = data.get("fromId")
         mtype = data.get("type")
-        if fid and fid != self.id and data.get("fromIp") and fid not in self.peers:
-            self._upsert_peer(fid, data.get("from", "Unknown"), data["fromIp"],
-                              int(data.get("fromPort") or self.port), f"manual:{data['fromIp']}", online=True)
-            self._save_known()
-            await self.broadcast_peers()
-            asyncio.ensure_future(self._flush(self.peers[fid]))
+        if fid and fid != self.id and data.get("fromIp"):
+            fip, fport = data["fromIp"], int(data.get("fromPort") or self.port)
+            cur = self.peers.get(fid)
+            # add new peers, AND self-heal a stale address if the peer now
+            # reports a different (corrected) IP/port than we have cached.
+            if not cur or cur.get("ip") != fip or cur.get("port") != fport:
+                self._upsert_peer(fid, data.get("from", "Unknown"), fip, fport, f"manual:{fip}", online=True)
+                self._save_known()
+                await self.broadcast_peers()
+                asyncio.ensure_future(self._flush(self.peers[fid]))
         if mtype == "hello":
             return web.json_response({"ok": True})
         if mtype == "ack":
@@ -1153,8 +1207,8 @@ class App:
         })
 
 
-async def serve(name, port, announce=True):
-    app_obj = App(name, port)
+async def serve(name, port, announce=True, ip_override=None):
+    app_obj = App(name, port, ip_override=ip_override)
     web_app = web.Application(client_max_size=1024 ** 4)  # effectively unlimited (1 TB)
     web_app.add_routes([
         web.get("/", app_obj.index),
@@ -1194,8 +1248,10 @@ async def serve(name, port, announce=True):
 
     if announce:
         print(f"\n  Lan Drop  —  '{app_obj.name}'")
+        print(f"  This Mac's LAN address:  {app_obj.ip}:{port}   (peers reach you here)")
+        if not _is_lan_ip(app_obj.ip):
+            print("  ⚠️  Could not find a normal LAN IP — set 'advertise_ip' in config.json or use --ip")
         print(f"  Open this Mac:  http://localhost:{port}")
-        print(f"  Other devices:  http://{app_obj.ip}:{port}")
         print("  Press Ctrl+C to stop.\n")
     await asyncio.Event().wait()
 
@@ -1204,8 +1260,9 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", default=socket.gethostname())
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--ip", default=None, help="advertise this LAN IP to peers (override auto-detect)")
     args = parser.parse_args()
-    await serve(args.name, args.port)
+    await serve(args.name, args.port, ip_override=args.ip)
 
 
 if __name__ == "__main__":
