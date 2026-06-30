@@ -669,6 +669,75 @@ class App:
         finally:
             self._flushing.discard(ip)
 
+    async def pending(self, request):
+        # A peer pulls items we queued for it. Works even when WE can't reach
+        # THEM (e.g. their firewall blocks our outbound) — they reach us.
+        rip = request.remote
+        items = self.outbox.pop(rip, [])
+        if items:
+            self._save_outbox()
+        out = []
+        for item in items:
+            if item.get("kind") == "chat":
+                out.append({"type": "chat", "from": self.name, "fromId": self.id,
+                            "text": item.get("text"), "msgId": item.get("msgId"),
+                            "replyTo": item.get("replyTo")})
+            elif item.get("kind") == "file":
+                if not Path(item["path"]).exists():
+                    continue
+                fid = uuid.uuid4().hex
+                self.uploads[fid] = {"path": item["path"], "name": item["name"], "size": item["size"]}
+                out.append({"type": "file", "from": self.name, "fromId": self.id,
+                            "name": item["name"], "size": item["size"],
+                            "url": f"http://{self.ip}:{self.port}/download/{fid}", "msgId": item.get("msgId")})
+            if item.get("msgId"):
+                await self._broadcast({"type": "status", "msgId": item["msgId"], "state": "delivered"})
+        return web.json_response({"items": out, "fromId": self.id, "name": self.name,
+                                  "ip": self.ip, "port": self.port})
+
+    async def poll_pending(self):
+        # Pull anything peers have queued for us (the firewall-friendly direction).
+        await asyncio.sleep(3)
+        while True:
+            for peer in list(self.peers.values()):
+                url = f"http://{peer['ip']}:{peer['port']}/pending?for={self.id}"
+                try:
+                    async with ClientSession(timeout=ClientTimeout(total=8)) as s:
+                        async with s.get(url) as r:
+                            if r.status != 200:
+                                continue
+                            data = await r.json()
+                except Exception:
+                    continue
+                for item in data.get("items", []):
+                    await self._receive_pulled(item, peer)
+            await asyncio.sleep(4)
+
+    async def _receive_pulled(self, item, peer):
+        if item.get("type") == "chat":
+            await self._broadcast({**item, "fromIp": peer["ip"], "fromPort": peer["port"]})
+            return
+        if item.get("type") == "file":
+            fid = uuid.uuid4().hex
+            path = UPLOAD_DIR / fid
+            try:
+                async with ClientSession(timeout=ClientTimeout(total=None, sock_connect=15, sock_read=120)) as s:
+                    async with s.get(item["url"]) as r:
+                        if r.status != 200:
+                            return
+                        with open(path, "wb") as f:
+                            async for chunk in r.content.iter_chunked(1024 * 256):
+                                f.write(chunk)
+            except Exception:
+                return
+            size = path.stat().st_size
+            self.uploads[fid] = {"path": str(path), "name": item["name"], "size": size}
+            if self.autosave:
+                asyncio.get_event_loop().run_in_executor(None, self._autosave_copy, str(path), item["name"])
+            await self._broadcast({"type": "file", "from": item.get("from"), "fromId": item.get("fromId"),
+                                   "name": item["name"], "size": size, "url": f"/download/{fid}",
+                                   "msgId": item.get("msgId"), "fromIp": peer["ip"], "fromPort": peer["port"]})
+
     async def peer_message(self, request):
         data = await request.json()
         fid = data.get("fromId")
@@ -1093,6 +1162,7 @@ async def serve(name, port, announce=True):
         web.get("/qr", app_obj.qr),
         web.get("/ws", app_obj.ws_handler),
         web.post("/peer/message", app_obj.peer_message),
+        web.get("/pending", app_obj.pending),
         web.post("/peer/upload", app_obj.peer_upload),
         web.post("/upload", app_obj.upload),
         web.post("/uploadfolder", app_obj.upload_folder),
@@ -1118,6 +1188,7 @@ async def serve(name, port, announce=True):
     await app_obj.start_discovery()
     await app_obj.reconnect_known()
     asyncio.ensure_future(app_obj.heartbeat())
+    asyncio.ensure_future(app_obj.poll_pending())
     asyncio.ensure_future(app_obj.resume_workspaces())
     app_obj.start_share_watchers()
 
