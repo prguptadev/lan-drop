@@ -913,7 +913,6 @@ function sendFileToActive(file) {
         msgIndex[mid] = { key: active, entry };
         wsSend({ action: "file", to: pid, fileId: r.id, msgId: mid });
       });
-      entry.status = "sent";   // dispatched; 'delivered' ack will upgrade to ✓✓
     } else { entry.status = "failed"; tr.status = "failed"; tr.done = Date.now(); toast("Upload failed"); }
     renderTransfers(); save(); if (active) renderMsgs();
   };
@@ -982,7 +981,6 @@ $("folderInput").onchange = () => {
       const r = JSON.parse(xhr.responseText); entry.prog = null; entry.name = r.name; entry.size = r.size;
       tr.status = "done"; tr.done = Date.now();
       targets.forEach(pid => { const mid = targets.length === 1 ? entry.id : rid(); msgIndex[mid] = { key: active, entry }; wsSend({ action: "file", to: pid, fileId: r.id, msgId: mid }); });
-      entry.status = "sent";
     } else { entry.status = "failed"; tr.status = "failed"; tr.done = Date.now(); toast("Folder send failed"); }
     renderTransfers(); save(); if (active) renderMsgs();
   };

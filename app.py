@@ -449,12 +449,10 @@ class App:
             if not meta:
                 await self._broadcast({"type": "status", "msgId": data.get("msgId"), "state": "failed"})
                 return
-            # deliver in the background so a big/slow transfer never blocks the
-            # browser's websocket (which would jam every following message).
-            asyncio.ensure_future(self._deliver_or_queue(peer, {
+            await self._deliver_or_queue(peer, {
                 "kind": "file", "msgId": data.get("msgId"),
                 "name": meta["name"], "size": meta["size"], "path": meta["path"],
-            }))
+            })
 
     async def _add_peer_by_ip(self, ip, port, quiet=False):
         ip = (ip or "").strip()
