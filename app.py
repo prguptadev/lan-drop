@@ -448,10 +448,12 @@ class App:
             meta = self.uploads.get(data.get("fileId"))
             if not meta:
                 return
-            await self._deliver_or_queue(peer, {
+            # deliver in the background so a big/slow transfer never blocks the
+            # browser's websocket (which would jam every following message).
+            asyncio.ensure_future(self._deliver_or_queue(peer, {
                 "kind": "file", "msgId": data.get("msgId"),
                 "name": meta["name"], "size": meta["size"], "path": meta["path"],
-            })
+            }))
 
     async def _add_peer_by_ip(self, ip, port, quiet=False):
         ip = (ip or "").strip()
@@ -480,9 +482,12 @@ class App:
             return None
         url = f"http://{peer['ip']}:{peer['port']}/peer/upload"
         headers = {"X-Filename": urllib.parse.quote(meta["name"])}
+        # total=None allows arbitrarily large files, but sock_read fails a
+        # stalled connection instead of hanging forever at the clock icon.
+        timeout = ClientTimeout(total=None, sock_connect=15, sock_read=120)
         try:
             with open(meta["path"], "rb") as f:
-                async with ClientSession(timeout=ClientTimeout(total=None)) as s:
+                async with ClientSession(timeout=timeout) as s:
                     async with s.post(url, data=f, headers=headers) as r:
                         if r.status == 200:
                             return (await r.json()).get("id")
@@ -502,7 +507,9 @@ class App:
                 f.write(chunk)
         self.uploads[fid] = {"path": str(path), "name": name, "size": size}
         if self.autosave:
-            self._autosave_copy(path, name)
+            # copy to ~/Downloads in a worker thread so a large file doesn't
+            # block the event loop (and delay this response to the sender).
+            asyncio.get_event_loop().run_in_executor(None, self._autosave_copy, str(path), name)
         return web.json_response({"id": fid})
 
     @staticmethod
